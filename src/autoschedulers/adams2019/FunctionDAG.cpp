@@ -57,41 +57,77 @@ class Featurizer : public IRVisitor {
         }
     }
     void visit(const IntImm *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"value\",\n" +
+	    "\t\t\t\t\t\"children\": []\n" +
+	    "\t\t\t\t},";
         op_bucket(PipelineFeatures::OpType::Const, op->type)++;
     }
     void visit(const UIntImm *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"value\",\n" +
+	    "\t\t\t\t\t\"children\": []\n" +
+	    "\t\t\t\t},";
         op_bucket(PipelineFeatures::OpType::Const, op->type)++;
     }
     void visit(const FloatImm *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"value\",\n" +
+	    "\t\t\t\t\t\"children\": []\n" +
+	    "\t\t\t\t},";
         op_bucket(PipelineFeatures::OpType::Const, op->type)++;
     }
     void visit(const Add *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"add\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Add, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const Sub *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"sub\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Sub, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const Mul *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"mul\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Mul, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const Mod *op) override {
         op_bucket(PipelineFeatures::OpType::Mod, op->type)++;
         IRVisitor::visit(op);
     }
     void visit(const Div *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"div\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Div, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const Min *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"min\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Min, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const Max *op) override {
+	expr_str = expr_str + "\t\t\t\t{\n" +
+	    "\t\t\t\t\t\"expr_type\": \"max\",\n" +
+	    "\t\t\t\t\t\"children\": [\n";
         op_bucket(PipelineFeatures::OpType::Max, op->type)++;
         IRVisitor::visit(op);
+	expr_str = expr_str + "]},";
     }
     void visit(const EQ *op) override {
         op_bucket(PipelineFeatures::OpType::EQ, op->type)++;
@@ -145,16 +181,45 @@ class Featurizer : public IRVisitor {
         IRVisitor::visit(op);
         if (op->call_type == Call::Halide) {
             if (op->name == func.name()) {
+		expr_str = expr_str + "\t\t\t\t{\n" +
+		    "\t\t\t\t\t\"expr_type\": \"fnun_call\",\n" +
+		    "\t\t\t\t\t\"children\": []\n" +
+		    "\t\t\t\t},";
                 visit_memory_access(op->name, op->type, op->args, PipelineFeatures::AccessType::LoadSelf);
                 op_bucket(PipelineFeatures::OpType::SelfCall, op->type)++;
             } else {
                 visit_memory_access(op->name, op->type, op->args, PipelineFeatures::AccessType::LoadFunc);
+		// Print the closures for the program annotation of this computation.
+		string key_func = func.name();
+		stringstream comp_temp_stream;
+
+		auto it = comp_strs.find(key_func);
+		if (it != comp_strs.end()) {
+		    string comp_str = it->second + comp_temp_stream.str();
+		    (*it).second = comp_str;
+		} else {
+		    string comp_str = comp_temp_stream.str();
+		    comp_strs.emplace(key_func, comp_str);
+		}
+
                 op_bucket(PipelineFeatures::OpType::FuncCall, op->type)++;
+		expr_str = expr_str + "\t\t\t\t{\n" +
+		    "\t\t\t\t\t\"expr_type\": \"func_call\",\n" +
+		    "\t\t\t\t\t\"children\": []\n" +
+		    "\t\t\t\t},";
             }
         } else if (op->call_type == Call::Extern || op->call_type == Call::PureExtern ||
                    op->call_type == Call::Intrinsic || op->call_type == Call::PureIntrinsic) {
             op_bucket(PipelineFeatures::OpType::ExternCall, op->type)++;
+	    expr_str = expr_str + "\t\t\t\t{\n" +
+		"\t\t\t\t\t\"expr_type\": \"func_call\",\n" +
+		"\t\t\t\t\t\"children\": []\n" +
+		"\t\t\t\t},";
         } else if (op->call_type == Call::Image) {
+	    expr_str = expr_str + "\t\t\t\t{\n" +
+		"\t\t\t\t\t\"expr_type\": \"access\",\n" +
+		"\t\t\t\t\t\"children\": []\n" +
+		"\t\t\t\t},";
             visit_memory_access(op->name, op->type, op->args, PipelineFeatures::AccessType::LoadImage);
             op_bucket(PipelineFeatures::OpType::ImageCall, op->type)++;
         }  // TODO: separate out different math calls a little better (sqrt vs sin vs lerp)
@@ -286,13 +351,101 @@ class Featurizer : public IRVisitor {
                 // so we can't use std::move(matrix) here without making a copy
                 vector<vector<OptionalRational>> copy = matrix;
                 e->add_load_jacobian(std::move(copy));
+
+                // Add coefficient matrix to each computation
+                auto it = comp_strs.find(func.name());
+                if (it != comp_strs.end()) {  // only if the func name already exists in the computation list.
+                    // generate access matrix for iterators
+                    vector<int> coeff_const;
+                    stringstream comp_temp_stream;
+
+                    if ( visited_accesses.find(func.name()) == visited_accesses.end() ) // not exists
+                        visited_accesses.emplace(func.name(), true);
+                    else{
+                        comp_temp_stream << ",\n";
+                    }
+
+                    for (int i = 0; i < (int)args.size(); i++) {
+                        const Add *add = args[i].as<Add>();
+                        if (add) {
+                            // handle where iterators include constants e.g., (x-1, y+1)
+                            const IntImm *int_imm = add->b.as<IntImm>();
+                            if (!int_imm)
+				coeff_const.push_back(0);
+                            else 
+				coeff_const.push_back(int_imm->value);
+                        } else {
+                            // handle where iterators do not include constant e.g., (x,y)
+                            coeff_const.push_back(0);
+                        }
+                    }
+
+                    if (coeff_const.size() == (unsigned long)args.size()) {
+                        for (const auto &jac : e->load_jacobians) {
+			    comp_temp_stream << "\t\t\t\t{\n"
+					<< "\t\t\t\t\t\"access_is_reduction\": ";
+
+			    if ( e->producer->func.dimensions() != e->consumer->node->func.dimensions() )
+				comp_temp_stream << "true,\n";
+			    else
+				comp_temp_stream << "false,\n";
+
+			    comp_temp_stream << "\t\t\t\t\t\"buffer_id\": " << buf_table[name] << ",\n"
+					<< "\t\t\t\t\t\"access_matrix\": [\n";
+
+			    for (size_t i = 0; i < jac.producer_storage_dims(); i++) {
+				comp_temp_stream << "\t\t\t\t\t\t[";
+				for (size_t j = 0; j < jac.consumer_loop_dims(); j++) {
+				    const auto &c = jac(i, j);
+				    if (!c.exists) 
+					comp_temp_stream << "1,";
+				    else
+					comp_temp_stream << c.numerator << ",";
+				}
+				comp_temp_stream << coeff_const[i];
+				if (i == jac.producer_storage_dims() - 1)
+				    comp_temp_stream << "]\n";
+				else
+				    comp_temp_stream << "],\n";
+			    }
+			    comp_temp_stream << "\t\t\t\t\t]\n"
+					<< "\t\t\t\t}";
+			}
+		    }
+		    string comp_str = it->second + comp_temp_stream.str();
+		    (*it).second = comp_str;
+		}
             }
         }
     }
 
 public:
-    Featurizer(Function &func, FunctionDAG::Node::Stage &stage)
-        : func(func), stage(stage) {
+    // To save memory size.
+    double memory_size = 1.0;
+
+    // To save annotations for each computation.
+    map<string, string> &comp_strs;
+
+    // To save iterators information
+    map<string, string> &iter_strs;
+
+    // To save buffer name and corresponding buffer_id (same as absolute_order)
+    map<string, int> &buf_table;
+
+    // This is used to handle comma issues in accesses in Json data
+    map<string, bool> &visited_accesses;
+
+    // This is temporary string to hold expression representations for each computation
+    string &expr_str;
+
+    // Modified initializer to pass members for tiramisu annotations from FunctionDAG
+    Featurizer(Function &func, FunctionDAG::Node::Stage &stage, double memory_size,
+                map<string, string> &comp_strs, map<string, string> &iter_strs,
+                map<string, int> &buf_table, map<string, bool> &visited_accesses,
+                string &expr_str)
+        : func(func), stage(stage), memory_size(memory_size),
+          comp_strs(comp_strs), iter_strs(iter_strs),
+          buf_table(buf_table), visited_accesses(visited_accesses), expr_str(expr_str) {
     }
 
     void visit_store_args(const std::string &name, Type t, vector<Expr> args) {
@@ -515,6 +668,7 @@ void FunctionDAG::Edge::expand_footprint(const Span *consumer_loop, Span *produc
             s[consumer->node->func.name() + "." + var + ".max"] = (int)p.max();
         }
     }
+
     // Apply that map to the bounds relationship encoded
     // in the edge to expand the bounds of the producer to
     // satisfy the consumer
@@ -598,6 +752,21 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
     }
 
     int stage_count = 0;
+
+    // input_stream holds inputs annotations in the program annotations for Tiramisu.
+    // output_file controls the output file for the final program annotations for Tiramisu.
+    // TODO: output_file name should follow the generator's name.
+    stringstream input_stream;
+    ofstream output_file;
+    output_file.open("tiramisu_program_annotations.txt");
+
+    // To make add iterators annotation conveniently
+    // keep track innermost iterator, outermost iterator and consumer's name
+    map<string, string> innermost_iter;
+    map<string, string> outermost_iter;
+    map<string, string> my_consumer;
+    map<string, string> computations_list;
+    map<string, set<string> > child_list;
 
     for (size_t i = order.size(); i > 0; i--) {
         Node &node = nodes[order.size() - i];
@@ -844,9 +1013,105 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
                 node.is_output |= o.same_as(node.func);
             }
 
+	    // Getting lower/upper bound for loop iterators that do not have estimates.
+	    if ( consumer.schedule().estimates().size() == 0 ){
+		for( auto l : stage.loop ){
+		    stringstream iter_temp_stream;
+		    string key = stage.name + "_" + l.var;
+
+		    iter_temp_stream << "\t\t\"" << stage.name << "_" << l.var << "\": {\n"
+				<< "\t\t\t\"lower_bound\": \""
+				<< l.var << ".min." + to_string(l.pure_dim) << "\",\n"
+				<< "\t\t\t\"upper_bound\": \""
+				<< l.var << ".extent." + to_string(l.pure_dim) << "\",\n";
+
+		    if ( iter_strs.find(key) == iter_strs.end() ) {
+			iter_strs.emplace(key, iter_temp_stream.str());
+		    }
+		}
+	    }
+
+            // Getting lower/upper bound for loop iterators that have estimates.
+	    for (const auto &b : consumer.schedule().estimates()) {
+		int64_t i_min = *as_const_int(b.min);
+		int64_t i_extent = *as_const_int(b.extent);
+
+		stringstream iter_temp_stream;
+		string key = stage.name + "_" + b.var;
+
+		iter_temp_stream << "\t\t\"" << stage.name << "_" << b.var << "\": {\n"
+				<< "\t\t\t\"lower_bound\": \"" << i_min << "\",\n"
+				<< "\t\t\t\"upper_bound\": \"" << i_extent << "\",\n";
+
+		if ( iter_strs.find(key) == iter_strs.end() ) {
+		    iter_strs.emplace(key, iter_temp_stream.str());
+		}
+	    }
+
+	    // We can annotate informations for each iterator
+	    // except child_iterators and computations_list for innermost loop
+	    for ( size_t i = 0; i < stage.loop.size(); i++){
+		string itername = stage.name + "_" + stage.loop[i].var;
+		stringstream iter_temp_stream;
+
+		if ( i == 0 ) { // outermost loop
+		    if ( outermost_iter.find(stage.name) == outermost_iter.end() )
+			outermost_iter.emplace(stage.name, itername);
+
+		    if ( my_consumer.find(stage.name) == my_consumer.end() ) // if this is a root node.
+			iter_temp_stream << "\t\t\t\"parent_iterator\": null,\n";
+		    else // get the consumer's innermost loop iterator
+			iter_temp_stream << "\t\t\t\"parent_iterator\": "
+					<< "\"" << innermost_iter[my_consumer[stage.name]] << "\",\n";
+
+		    // if this is not a single nest loop
+		    if ( i != stage.loop.size() - 1){
+			iter_temp_stream << "\t\t\t\"child_iterators\": "
+					<< "[\"" << stage.name << "_" << stage.loop[i+1].var << "\"],\n";
+
+			iter_temp_stream << "\t\t\t\"computations_list\": "
+					<< "[]\n";
+		    }
+		    else { // If this is a single loop, this loop can be also innermost loop at the same time.
+			if ( innermost_iter.find(stage.name) == innermost_iter.end() )
+			    innermost_iter.emplace(stage.name, itername);
+		    }
+		}
+		else if ( i == stage.loop.size() - 1 ) { // innermost loop inside a non-single loop
+		    if ( innermost_iter.find(stage.name) == innermost_iter.end() )
+			innermost_iter.emplace(stage.name, itername);
+
+		    iter_temp_stream << "\t\t\t\"parent_iterator\": "
+				<< "\"" << stage.name << "_" << stage.loop[i-1].var << "\",\n";
+		}
+		else { // if the the current loop is not either inner oroutermost loop
+		    iter_temp_stream << "\t\t\t\"parent_iterator\": "
+				<< "\"" << stage.name << "_" << stage.loop[i-1].var << "\",\n";
+
+		    iter_temp_stream << "\t\t\t\"child_iterators\": "
+				<< "[\"" << stage.name << "_" << stage.loop[i+1].var << "\"],\n";
+
+		    iter_temp_stream << "\t\t\t\"computations_list\": "
+				<< "[]\n";
+		}
+
+		auto it = iter_strs.find(itername);
+		string new_str = iter_temp_stream.str();
+		if ( it != iter_strs.end() ){
+		    new_str = it->second + new_str;
+		    (*it).second = new_str;
+		} else {
+		    iter_strs.emplace(itername, new_str);
+		}
+	    }
+
             if (node.is_output) {
-                // Get the bounds estimate
-                map<string, Span> estimates;
+		// Get the bounds estimate
+		map<string, Span> estimates;
+
+		// For tiramisu program annotation, calculate memoery usage in MBytes.
+		double memory_usage = 1.0/(double)(1024*1024);
+
                 for (const auto &b : consumer.schedule().estimates()) {
                     int64_t i_min = *as_const_int(b.min);
                     int64_t i_extent = *as_const_int(b.extent);
@@ -869,7 +1134,10 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
                     } else {
                         estimates[b.var] = Span(i_min, i_min + i_extent - 1, false);
                     }
+                    memory_usage *= (double)i_extent;
                 }
+                memory_size = memory_usage;
+
                 for (const auto &b : consumer.schedule().bounds()) {
                     const int64_t *i_min = as_const_int(b.min);
                     const int64_t *i_extent = as_const_int(b.extent);
@@ -886,7 +1154,6 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
                     node.estimated_region_required.push_back(it->second);
                 }
             }
-
             stage.index = s;
 
             exprs = apply_param_estimates.mutate(exprs);
@@ -930,6 +1197,9 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
                     any_incoming_edges = true;
                     node.is_pointwise &= checker.is_pointwise;
                     edges.emplace_back(std::move(edge));
+
+                    if ( my_consumer.find(edge.producer->func.name()) == my_consumer.end() )
+                        my_consumer.emplace(edge.producer->func.name(), edge.consumer->name);
                 }
             }
 
@@ -937,7 +1207,176 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
             node.is_input = !node.func.has_update_definition() && node.is_wrapper && !any_incoming_edges;
             node.dimensions = node.func.dimensions();
         }
+
+        // print the second part of the Tiramisu program annotation - computations.
+        int args_size = (int)pure_args.size() - 1;
+        int buffer_id = order.size() - node.id;
+
+        stringstream comp_temp_stream;
+        string key = consumer.name();
+
+        if (buf_table.find(key) == buf_table.end())
+            buf_table.emplace(key, buffer_id);
+
+        // prepare comp strings - buffer_id, iterators and dims_after_reduction
+        comp_temp_stream << "\t\t\"" << key << "\": {\n"
+                         << "\t\t\t\"absolute_order\": " << buffer_id << ",\n"
+                         << "\t\t\t\"iterators\": [";
+
+        for (int i = 0; i < args_size; i++)
+            comp_temp_stream << "\"" << key << "_" << pure_args[i] << "\", ";
+        comp_temp_stream << "\"" << key << "_" << pure_args[args_size] << "\"],\n";
+
+        comp_temp_stream << "\t\t\t\"comp_is_reduction\": ";
+
+	// Currently manually added the reduction operators generated from random program generator
+	// This needs to be extended or more flexible.
+        if ( key.find("conv2D_w") != string::npos ||
+             key.find("conv2D_r") != string::npos ||
+             key.find("conv_r") != string::npos ||
+             key.find("conv_w") != string::npos ||
+             key.find("all_r") != string::npos ||
+             key.find("all_w") != string::npos )
+            comp_temp_stream << "true,";
+        else
+            comp_temp_stream << "false,";
+
+        comp_temp_stream << "\n"
+                         << "\t\t\t\"write_access_relation\": \"{ " << key;
+
+        string iterators_str = "[";
+        for (int i = 0; i < args_size; i++)
+            iterators_str += key + "_" + pure_args[i] + ", ";
+        iterators_str += key + "_" + pure_args[args_size] + "]";
+
+        comp_temp_stream << iterators_str << " -> buf" << buffer_id << iterators_str << "}\",\n";
+
+        comp_temp_stream << "\t\t\t\"write_buffer_id\": " << buffer_id << ",\n"
+                         << "\t\t\t\"data_type\": \"" << consumer.output_types()[0] << "\",\n"
+                         << "\t\t\t\"data_type_size\": 0,\n"
+                         << "\t\t\t\"accesses\": [";
+
+        // search in comp_strs if this function key already exists.
+        auto it = comp_strs.find(key);
+
+        if (it != comp_strs.end()) {  // already exists.
+            string comp_str = it->second + comp_temp_stream.str();
+            (*it).second = comp_str;
+        } else {
+            string comp_str = comp_temp_stream.str();
+            comp_strs.emplace(key, comp_str);
+        }
     }
+
+    // We add child_iterators and computations_list for the innermost loop in each Func.
+    for ( auto &n : nodes ){
+        // temporary strs to get the list of iterators and producer's name in the loop.
+        string child_iterators_str = "";
+        string computations_list_str = "";
+
+        // to save into json file.
+        stringstream iter_temp_stream;
+
+        for (auto &e : edges) {
+            if ( e.consumer->name == n.func.name() ){
+                string producer = e.producer->func.name();
+                string consumer = e.consumer->name;
+
+                // Add child iteartors - producer's outermost iterators are added.
+                if ( !child_iterators_str.empty() )
+                    child_iterators_str += ", ";
+
+                if ( outermost_iter.find(producer) != outermost_iter.end() )
+                    child_iterators_str += "\"" + outermost_iter[producer] + "\"";
+
+                // Add computations_list - producer's name
+                if ( !computations_list_str.empty() )
+                    computations_list_str += ", ";
+
+                computations_list_str += "\"" + producer + "\"";
+            }
+        }
+        iter_temp_stream << "\t\t\t\"child_iterators\": "
+                         << "[" + child_iterators_str + "],\n";
+
+        iter_temp_stream << "\t\t\t\"computations_list\": "
+                         << "[" + computations_list_str + "]\n";
+
+        auto it = iter_strs.find(innermost_iter[n.func.name()]);
+        string new_str = iter_temp_stream.str();
+
+        if ( it != iter_strs.end() ){
+            new_str = it->second + new_str;
+            (*it).second = new_str;
+        } else {
+            iter_strs.emplace(innermost_iter[n.func.name()], new_str);
+        }
+    }
+
+    string root_iter = "";
+    // To create child_list in tree structures in schedule annotation.
+    for ( auto &n : nodes ){
+        string key;
+        // Add child_list except innermost loops in each node.
+        for (auto &s : n.stages) {
+            for ( size_t i = 0; i < s.loop.size(); i++){
+                key = s.name + "_" + s.loop[i].var;
+
+                if ( root_iter.empty() )
+                    root_iter = key;
+
+                if ( i != s.loop.size() - 1 ) { // not innermost loop
+                    string child_list_str = s.name + "_" + s.loop[i+1].var;
+                    auto it = child_list.find(key);
+                    if ( it == child_list.end() ){
+                        set<string> new_child_list;
+                        new_child_list.insert(child_list_str);
+                        child_list.emplace(key, new_child_list);
+                    }
+                    else
+                        it->second.insert(child_list_str);
+                }
+            }
+        }
+
+        // Add child_list and computations_list for innermost loops
+        key = innermost_iter[n.func.name()];
+        string computations_list_str = "";
+        for (auto &e : edges) {
+            if ( e.consumer->name == n.func.name() ){
+                string producer = e.producer->func.name();
+                string consumer = e.consumer->name;
+
+                auto it = child_list.find(key);
+                string new_iter = outermost_iter[producer];
+                if ( it != child_list.end() ) {// already existing key
+                    it->second.insert(new_iter);
+                }
+                else{
+                    set<string> new_child_list;
+                    new_child_list.insert(new_iter);
+                    child_list.emplace(key, new_child_list);
+                }
+
+                if ( !computations_list_str.empty() )
+                    computations_list_str += ", ";
+                computations_list_str += "\"" + producer + "\"";
+            }
+        }
+        computations_list.emplace(key, computations_list_str);
+    }
+
+    // We print the loop structure and save as text for schedule annotations.
+    ofstream tree_struct_file;
+    tree_struct_file.open("tiramisu_tree_structure.txt");
+    tree_struct_file << "\t\t\"tree_structure\": {\n"
+                     << "\t\t\t\"roots\": [\n";
+
+    print_loop_structure(root_iter, computations_list, child_list, tree_struct_file, true);
+
+    tree_struct_file << "\t\t\t]\n"
+                     << "\t\t},\n";
+    tree_struct_file.close();
 
     // Initialize the memory layouts for the bounds structs
     for (auto &n : nodes) {
@@ -986,14 +1425,84 @@ FunctionDAG::FunctionDAG(const vector<Function> &outputs, const MachineParams &p
 
     // Compute the algorithm-specific features for the neural net
     featurize();
+
+    ofstream comp_list_file;
+    comp_list_file.open("tiramisu_computations_list.txt");
+
+    // print the first part in the Tiramisu program annotation:
+    // print the list of iterators:
+    output_file << "\"program_annotation\": {\n";
+
+    // print memory_size
+    output_file << "\t\"memory_size\": " << memory_size << ",\n";
+
+    // print the list of iterators
+    output_file << "\t\"iterators\": {";
+    for (auto it = iter_strs.begin(); it != iter_strs.end(); ++it) {
+        if ( it != iter_strs.begin() )
+            output_file << ",\n";
+        else
+            output_file << "\n";
+        output_file << it->second << "\t\t}";
+    }
+    output_file << "\n\t},\n";
+
+    // Print out the rest of the program annotations for all the funcs.
+    output_file << "\t\"computations\": {";
+    for (auto it = comp_strs.begin(); it != comp_strs.end(); ++it) {
+        if ( it != comp_strs.begin() )
+            output_file << ",\n";
+        else
+            output_file << "\n";
+        comp_list_file << it->first << endl;
+        output_file << it->second << "\n\t\t}";
+    }
+    output_file << "\n\t}\n}\n";
+    output_file.close();
+    comp_list_file.close();
+}
+
+void FunctionDAG::print_loop_structure(string root_iter,
+        map<string, string> &computations_list, map<string, set<string> > &child_list,
+        ofstream &tree_struct_file, bool is_first){
+    if ( !is_first )
+        tree_struct_file << ",\n";
+    else
+        tree_struct_file << "\n";
+
+    tree_struct_file << "\t\t\t\t{\n"
+		<< "\t\t\t\t\t\"loop_name\": \"" << root_iter << "\",\n"
+		<< "\t\t\t\t\t\"computations_list\": [" << computations_list[root_iter] << "],\n"
+		<< "\t\t\t\t\t\"child_list\": [";
+
+    auto it = child_list.find(root_iter);
+    if ( it != child_list.end() ) { // if child list exists
+        tree_struct_file << "\n";
+        int isFirst = 0;
+        for ( auto c_iter : it->second ){
+            if ( isFirst == 0) {
+                print_loop_structure(c_iter, computations_list, child_list, tree_struct_file, true);
+                isFirst++;
+            } else {
+                print_loop_structure(c_iter, computations_list, child_list, tree_struct_file, false);
+            }
+        }
+    }
+    tree_struct_file << "]" << "}";
 }
 
 void FunctionDAG::featurize() {
     for (Node &node : nodes) {
+        expr_str = "\n\t\t\t],";
+        expr_str += "\n\t\t\t\"expression_representation\": {\n";
+        expr_str += "\t\t\t\t\"expr_type\": \"root\", \n";
+        expr_str += "\t\t\t\t\"children\": [\n";
+        auto original_str_len = expr_str.size();
+
         for (size_t stage_idx = 0; stage_idx < node.stages.size(); stage_idx++) {
             Node::Stage &stage = node.stages[stage_idx];
 
-            Featurizer featurizer(node.func, stage);
+            Featurizer featurizer(node.func, stage, memory_size, comp_strs, iter_strs, buf_table, visited_accesses, expr_str);
 
             if (node.func.extern_definition_proxy_expr().get()) {
                 // Extern function call with a proxy implementation specified: generate the featurization from the proxy
@@ -1007,16 +1516,48 @@ void FunctionDAG::featurize() {
                 }
                 stage.features = PipelineFeatures();
 
+                // This is the loop visiting expresion_reps
                 for (auto v : def.values()) {
                     featurizer.visit_store_args(node.func.name(), v.type(), def.args());
                     v = common_subexpression_elimination(simplify(v));  // Get things into canonical form
                     v.accept(&featurizer);
+
+                    // This is to handle trailing comma in the output Json.
+                    if ( original_str_len == expr_str.size() ) {
+                        expr_str = expr_str + "\t\t\t\t{\n" +
+                                "\t\t\t\t\t\"expr_type\": \"something_else\",\n" +
+                                "\t\t\t\t\t\"children\": []\n" +
+                                "\t\t\t\t}";
+                    } else {
+                        string target_str = "},]";
+                        string sub_str = "} ]";
+                        auto index = expr_str.find(target_str);
+                        while ( index != string::npos ){
+                            expr_str.replace(index, sub_str.length(), sub_str);
+                            index = expr_str.find(target_str);
+                        }
+                    }
                 }
+
                 for (auto v : def.args()) {
                     v = common_subexpression_elimination(simplify(v));  // Get things into canonical form
                     v.accept(&featurizer);
                 }
             }
+	    // Code to save histograms in Tiramisu's program annotation was removed.
+	    // Histograms were replaced by expr_tree in the current version.
+	    // If histograms needs to be collected, this is the right place.
+        }
+        expr_str = expr_str.substr(0, expr_str.size() - 1);
+        expr_str += "\t\t\t]}\n";
+        string key = node.func.name();
+
+        auto it = comp_strs.find(key);
+        if ( it != comp_strs.end() ){
+            string new_str = it->second + expr_str;
+            (*it).second = new_str;
+        } else {
+            comp_strs.emplace(key, expr_str);
         }
     }
 }

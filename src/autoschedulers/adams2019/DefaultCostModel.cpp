@@ -292,11 +292,54 @@ void DefaultCostModel::evaluate_costs() {
     (void)result;
     internal_assert(result == 0);
 
-    for (int i = 0; i < cursor; i++) {
-        internal_assert(cost_ptrs(i));
-        *(cost_ptrs(i)) = dst(i);
-    }
+    if ( Internal::get_env_variable("HL_USE_TIRAMISU") == "1" ) {
+	// 1. here, we get the contents in bs_schedule_annotations.txt
+	//   e.g., {  "comp1": {...}, ..., "compn": {...} }
+	// 2. Prepare json file here invoke python model
+	// 3. Invoke python model, get execution numbers back (probably in file)
+	// 4. Read, save into the Runtime::Buffer<float> dst
+	//    or directly put into *(cost_ptrs(i))
+	// 5. remove bs_schedule_annotations.txt here
+	// if (remove("bs_schedule_annotations.txt") == 0) deleted successfully
 
+	string command_str="bash ";
+
+	// The absolute path needs to be manually adjusted for different environment.
+	command_str += "/prj/qct/coredev/hexagon/austin/teams/llvm/Halide/autosched/eunjpark/cost_model_halide";
+
+	// Invoke the script to prepare json, invoke the pyhon model, and get the predictions.
+	command_str += "/use_tiramisu_cost_model.sh";
+
+	// This is the 1st argument for use_tiramisu_cost_model.sh
+	// Output - tiramisu_predictions.txt will be saved in the current location.
+	command_str += " `pwd`";
+
+	system(command_str.c_str());
+
+	ifstream pred_file;
+	pred_file.open("tiramisu_predictions.txt");
+	vector<float> preds;
+	string pred_str;
+
+	while ( getline(pred_file, pred_str) ){
+	    preds.push_back(stof(pred_str));
+	}
+
+	for (int i = 0; i < cursor; i++) {
+	    internal_assert(cost_ptrs(i));
+	    *(cost_ptrs(i)) = preds[i];
+	}
+
+	pred_file.close();
+
+	if ( remove("interm_schedules.txt") != 0 )
+	    cout << "interm_schedules.txt was not deleted\n";
+    } else {
+        for (int i = 0; i < cursor; i++) {
+            internal_assert(cost_ptrs(i));
+            *(cost_ptrs(i)) = dst(i);
+        }
+    }
     cursor = 0;
 }
 

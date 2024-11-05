@@ -262,6 +262,16 @@ struct LoopNest {
                const LoopNest *parent,
                const LoopNest *compute_site) const;
 
+    // To Tiramisu's schedule annoations, only print the scheduled without actual applying.
+    // Since we use the cost model from Tiramisu to predict runtime,
+    // we can skip applying. See DefaultCostModel::evalute_costs() for this change.
+    void print_schedule_only(LoopLevel here,
+		StageMap<std::unique_ptr<StageScheduleState>> &state_map,
+		double num_cores,
+		int depth,
+		const LoopNest *parent,
+		const LoopNest *compute_site) const;
+
     // The below are two feature caches.
     // hash of producers -> StageMap
     mutable std::map<uint64_t, StageMap<StageMap<FeatureIntermediates>>> feature_intermediates_cache;

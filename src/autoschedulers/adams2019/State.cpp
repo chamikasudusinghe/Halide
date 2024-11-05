@@ -1,4 +1,5 @@
 #include "State.h"
+#include <set>
 
 namespace Halide {
 namespace Internal {
@@ -6,6 +7,7 @@ namespace Autoscheduler {
 
 using std::map;
 using std::pair;
+using std::set;
 
 uint64_t State::structural_hash(int depth) const {
     uint64_t h = num_decisions_made;
@@ -128,6 +130,10 @@ bool State::calculate_cost(const FunctionDAG &dag, const MachineParams &params,
                            int64_t memory_limit, bool verbose) {
     StageMap<ScheduleFeatures> features;
     compute_featurization(dag, params, &features, cache_options);
+    map<string, string> schedule_map;
+
+    if ( (get_env_variable("HL_USE_TIRAMISU") == "1" ) )
+	print_schedule_only(dag, params, schedule_map);
 
     cost = 0.0f;
 
@@ -173,6 +179,34 @@ bool State::calculate_cost(const FunctionDAG &dag, const MachineParams &params,
             cost = 1e50;
             return false;
         }
+    }
+
+    if ( (get_env_variable("HL_USE_TIRAMISU") == "1" ) ){
+        // Here, we open the file bs_schedule_annotations.txt to append
+        // 1. outfile.open("bs_schedule_annotations.txt", ios_base::app);
+        // 2. outfile << contents
+        // 3. outfile.close();
+        ofstream interm_sfile;
+        interm_sfile.open("interm_schedules.txt", ios_base::app);
+
+        interm_sfile << "==" << endl;
+	// I added '#' and .EMPTY in the end to be able to post process the schedules file
+	// to generate JSON.
+        for (auto &n: dag.nodes)
+        {
+            interm_sfile << "#";
+
+            auto it = schedule_map.find(n.func.name());
+            if ( it != schedule_map.end() ){ // schedules explored
+                interm_sfile << n.func.name()
+                                << schedule_map[n.func.name()] << endl;
+            }
+            else {
+                interm_sfile << n.func.name() << "\n    .EMPTY\n";
+            }
+        }
+
+        interm_sfile.close();
     }
 
     // Tell the cost model about this state. It won't actually
@@ -687,6 +721,125 @@ void State::apply_schedule(const FunctionDAG &dag, const MachineParams &params) 
     }
 }
 
+void State::print_schedule_only(const FunctionDAG &dag, const MachineParams &params, map<string, string> &schedule_map) {
+    StageMap<std::unique_ptr<LoopNest::StageScheduleState>> state_map;
+
+    // This calls LoopNest::print_schedule_only()
+    root->print_schedule_only(LoopLevel::root(), state_map, params.parallelism, 0, nullptr, nullptr);
+
+    std::ostringstream src;
+
+    // Print handles for all the Funcs
+    int i = (int)(dag.nodes.size() - 1);
+    for (const auto &n : dag.nodes) {
+        if (!n.is_input) {
+            src << "Func " << n.func.name() << " = pipeline.get_func(" << i << ");\n";
+        }
+        i--;
+    }
+
+    // Gather all Vars and RVars so that we can declare them in the emitted source
+    map<string, string> vars, rvars;
+    for (auto &p : state_map) {
+        for (auto &v : p.second->vars) {
+            if (v.exists) {
+                if (v.var.is_rvar) {
+                    rvars.emplace(v.var.name(), v.accessor);
+                } else {
+                    vars.emplace(v.var.name(), v.accessor);
+                }
+            }
+        }
+    }
+
+    for (auto &p : state_map) {
+        if (p.first->node->is_input) {
+            continue;
+        }
+
+        Stage stage(p.first->stage);
+
+        // Do all the reorders and pick which vars to
+        // parallelize.
+        vector<VarOrRVar> vars;
+        int64_t parallel_tasks = 1;
+        vector<VarOrRVar> parallel_vars;
+        bool any_parallel_vars = false, any_parallel_rvars = false;
+        for (auto it = p.second->vars.rbegin(); it != p.second->vars.rend(); it++) {
+            if (!it->exists || it->extent == 1) {
+                continue;
+            }
+            if (!it->parallel) {
+                break;
+            }
+            any_parallel_rvars |= it->var.is_rvar;
+            any_parallel_vars |= !it->var.is_rvar;
+            parallel_tasks *= it->extent;
+            parallel_vars.push_back(it->var);
+        }
+
+        if (p.second->vars.size() > 1) {
+            p.second->schedule_source << "\n    .reorder(";
+            bool first = true;
+            for (auto &v : p.second->vars) {
+                if (v.exists) {
+                    vars.push_back(v.var);
+                    if (!first) {
+                        p.second->schedule_source << ", ";
+                    } else {
+                        p.second->schedule_source << "{";
+                    }
+                    first = false;
+                    p.second->schedule_source << v.var.name();
+                }
+            }
+            p.second->schedule_source << "})";
+        }
+
+        // Halide doesn't let you fuse an RVar with a Var, even if
+        // they are both pure.
+        bool can_fuse = !(any_parallel_vars && any_parallel_rvars);
+        if (can_fuse) {
+            for (size_t i = 1; i < parallel_vars.size(); i++) {
+                // Outermost, and next outermost. Preserve the inner
+                // name to not invalidate any compute_ats.
+                p.second->schedule_source << "\n    .fuse(" << parallel_vars[i].name()
+                                          << ", " << parallel_vars[i - 1].name()
+                                          << ", " << parallel_vars[i].name() << ")";
+            }
+            if (!parallel_vars.empty()) {
+                p.second->schedule_source << "\n    .parallel(" << parallel_vars.back().name() << ")";
+            }
+        } else {
+            for (const auto &v : parallel_vars) {
+                p.second->schedule_source << "\n    .parallel(" << v.name() << ")";
+            }
+        }
+
+        // Dump the schedule source string
+        src << p.first->name
+            << p.second->schedule_source.str()
+            << ";\n";
+
+        // Add to schedule map to return to calculate_cost
+        // We don't check if the item already exists since we add the item only once
+        // for the Func processed.
+        schedule_map.emplace(p.first->name, p.second->schedule_source.str());
+
+	// When you want to test func name and schedules here
+	// std::cout << p.first->name << "\t" << p.second->schedule_source.str() << std::endl;
+    }
+
+    // Sanitize the names of things to make them legal source code.
+    schedule_source = src.str();
+    bool in_quotes = false;
+    for (auto &c : schedule_source) {
+        in_quotes ^= (c == '"');
+        if (!in_quotes && c == '$') {
+            c = '_';
+        }
+    }
+}
 }  // namespace Autoscheduler
 }  // namespace Internal
 }  // namespace Halide

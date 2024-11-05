@@ -12,10 +12,13 @@
 #include <utility>
 
 #include <vector>
+#include <fstream>
 
 #include "Errors.h"
 #include "Featurization.h"
 #include "Halide.h"
+
+using namespace std;
 
 namespace Halide {
 namespace Internal {
@@ -567,9 +570,34 @@ struct FunctionDAG {
     void dump() const;
     std::ostream &dump(std::ostream &os) const;
 
+    // For Tiramisu annotations:
+    // - To save memory size.
+    double memory_size = 1.0;
+
+    // - To save annotations for each computation.
+    map<string, string> comp_strs;
+
+    // - To save iterators information
+    map<string, string> iter_strs;
+
+    // - To save buffer name and corresponding buffer_id (same as absolute_order)
+    map<string, int> buf_table;
+
+    // - This is used to handle comma issues in accesses in Json data
+    map<string, bool> visited_accesses;
+
+    // - This is temporary string to hold expression representations for each computation
+    string expr_str;
+
 private:
     // Compute the featurization for the entire DAG
     void featurize();
+
+    void print_loop_structure(string root_iter,
+                map<string, string> &computations_list,
+                map<string, set<string> > &child_list,
+                ofstream &tree_struct_file,
+                bool is_fist);
 
     template<typename OS>
     void dump_internal(OS &os) const;

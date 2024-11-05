@@ -1,0 +1,1 @@
+bin/host/filter ../images/rgb.png bin/host/out.png

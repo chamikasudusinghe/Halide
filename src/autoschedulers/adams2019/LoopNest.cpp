@@ -3,6 +3,8 @@
 
 using std::set;
 using std::vector;
+using std::map;
+using std::pair;
 
 namespace Halide {
 namespace Internal {
@@ -1955,6 +1957,220 @@ void LoopNest::apply(LoopLevel here,
                 state.schedule_source << "\n    .store" << loop_level;
             }
         }
+    }
+}
+
+void LoopNest::print_schedule_only(LoopLevel here,
+                     StageMap<std::unique_ptr<StageScheduleState>> &state_map,
+                     double num_cores,
+                     int depth,
+                     const LoopNest *parent,
+                     const LoopNest *compute_site) const {
+    if (is_root()) {
+        for (const auto &c : children) {
+            c->print_schedule_only(LoopLevel::root(), state_map, num_cores, 1, this, c.get());
+	    // if (c->stage->index == 0) { } 
+	    // Removed for the this function. 
+	}
+    } else {
+        // Non-root nodes always have parents.
+        internal_assert(parent != nullptr);
+
+        if (parent->node != node) {
+            compute_site = this;
+        }
+
+        const auto &symbolic_loop = stage->loop;
+        const auto &parent_bounds = parent->get_bounds(node);
+        if (!state_map.contains(stage)) {
+            StageScheduleState *state = new StageScheduleState;
+            state->num_cores = num_cores;
+            state->vector_dim = vector_dim;
+            state->vectorized_loop_index = vectorized_loop_index;
+            for (size_t i = 0; i < symbolic_loop.size(); i++) {
+                StageScheduleState::FuncVar fv;
+                const auto &l = symbolic_loop[i];
+                fv.var = VarOrRVar(l.var, !l.pure);
+                fv.orig = fv.var;
+                fv.accessor = l.accessor;
+                const auto &p = parent_bounds->loops(stage->index, i);
+                fv.extent = p.extent();
+                fv.constant_extent = p.constant_extent();
+                fv.outermost = true;
+                fv.parallel = l.pure && parallel;
+                fv.exists = true;
+                fv.pure = l.pure;
+                fv.index = i;
+                fv.innermost_pure_dim = (i == (size_t)vectorized_loop_index);
+                state->vars.push_back(fv);
+            }
+            // Bubble the innermost pure dimension to the front of the pure dimensions
+            for (int i = vectorized_loop_index - 1;
+                 i >= 0 && state->vars[i].pure; i--) {
+                std::swap(state->vars[i], state->vars[i + 1]);
+            }
+            state_map.emplace(stage, std::unique_ptr<StageScheduleState>(state));
+        }
+        auto &state = *(state_map.get(stage));
+
+        // The getter for grabbing Func handles is reverse topological order
+        Stage s = Func(node->func);
+        if (stage->index > 0) {
+            s = Func(node->func).update(stage->index - 1);
+        }
+
+        // Pick a tail strategy for any splits of pure vars. RVars always use guardwithif
+        auto pure_var_tail_strategy = TailStrategy::Auto;
+
+        if (!size.empty()) {
+            if (innermost) {
+                if (vectorized_loop_index >= 0) {
+                    size_t i = 0;
+                    while (!state.vars[i].innermost_pure_dim) {
+                        i++;
+                    }
+                    auto &v = state.vars[i];
+                    internal_assert(v.innermost_pure_dim && v.exists) << v.var.name() << "\n";
+                    // Is the result of a split
+                    state.schedule_source
+                        << "\n    .vectorize(" << v.var.name() << ")";
+                }
+            } else {
+                // Grab the innermost loop for this node
+                const LoopNest *innermost_loop = this, *child = nullptr;
+                while (!innermost_loop->innermost) {
+                    for (const auto &c : innermost_loop->children) {
+                        if (c->node == node) {
+                            if (!child) {
+                                child = c.get();
+                            }
+                            innermost_loop = c.get();
+                            break;
+                        }
+                    }
+                }
+
+                // Do the implied splits
+                vector<StageScheduleState::FuncVar> new_inner;
+                for (size_t i = 0; i < symbolic_loop.size(); i++) {
+                    StageScheduleState::FuncVar v;
+                    StageScheduleState::FuncVar &parent = state.vars[i];
+
+                    int64_t factor = (parent.extent + size[parent.index] - 1) / size[parent.index];
+                    int64_t innermost_size = innermost_loop->size[parent.index];
+
+                    if (child && parent.innermost_pure_dim) {
+                        // Ensure the split is a multiple of the
+                        // vector size. With all these rounded
+                        // divs going on it can drift.
+                        factor = ((factor + innermost_size - 1) / innermost_size) * innermost_size;
+                    }
+
+                    if (child && innermost_size > factor) {
+                        factor = innermost_size;
+                    }
+
+                    if (!parent.exists || factor == 1) {
+                        v.exists = false;
+                        v.extent = 1;
+                    } else if (size[parent.index] == 1 && !(child &&
+                                                            child->innermost &&
+                                                            parent.innermost_pure_dim &&
+                                                            parent.var.name() == parent.orig.name())) {
+                        // Not split in this dimension
+                        v = parent;
+                        v.parallel = false;
+                        parent.exists = false;
+                        parent.extent = 1;
+                    } else {
+                        VarOrRVar inner(Var(parent.var.name() + "i"));
+                        if (parent.var.is_rvar) {
+                            inner = RVar(parent.var.name() + "i");
+                        }
+
+                        auto tail_strategy = pure_var_tail_strategy;
+                        // If it's an RVar, or not the outermost split and we're in an update, we need a guard with if instead.
+                        if (parent.var.is_rvar || (stage->index != 0 && !parent.outermost)) {
+                            tail_strategy = TailStrategy::GuardWithIf;
+                        }
+
+                        if (factor > parent.extent && tail_strategy == TailStrategy::ShiftInwards) {
+                            // Don't shift all the way off the image.
+                            tail_strategy = TailStrategy::GuardWithIf;
+                        }
+
+                        state.schedule_source
+                            << "\n    .split("
+                            << parent.var.name() << ", "
+                            << parent.var.name() << ", "
+                            << inner.name() << ", "
+                            << factor << ", "
+                            << "TailStrategy::" << tail_strategy << ")";
+                        v = parent;
+                        parent.extent = size[parent.index];
+                        v.constant_extent = (tail_strategy != TailStrategy::GuardWithIf);
+                        v.var = inner;
+                        v.accessor.clear();
+                        v.extent = factor;
+                        v.parallel = false;
+                        v.outermost = false;
+                    }
+                    new_inner.push_back(v);
+                }
+
+                if (child->innermost) {
+                    // Maybe do some unrolling
+
+                    int64_t product_of_pure_loops = 1;
+                    bool all_pure_loops_constant_size = true;
+                    for (size_t i = 0; i < symbolic_loop.size(); i++) {
+                        if (state.vars[i].pure) {
+                            product_of_pure_loops *= state.vars[i].extent;
+                            all_pure_loops_constant_size &= state.vars[i].constant_extent;
+                        }
+                    }
+
+                    if (product_of_pure_loops <= kUnrollLimit && all_pure_loops_constant_size) {
+                        // There's a hope we can fit anything compute-at this level into registers if we fully unroll
+                        // TODO: 16 should be the number of vector registers in the architecture
+                        std::stable_sort(state.vars.begin(), state.vars.begin() + symbolic_loop.size(),
+                                         [](const StageScheduleState::FuncVar &a, const StageScheduleState::FuncVar &b) {
+                                             return a.pure && !b.pure;
+                                         });
+
+                        for (size_t i = 0; i < symbolic_loop.size(); i++) {
+                            if (state.vars[i].pure && state.vars[i].exists && state.vars[i].extent > 1) {
+                                state.schedule_source << "\n    .unroll(" << state.vars[i].var.name() << ")";
+                            }
+                        }
+                    }
+                }
+
+                bool found = false;
+                for (const auto &v : state.vars) {
+                    if (!v.exists) {
+                        continue;
+                    }
+                    here = LoopLevel(node->func, v.var);
+                    found = true;
+                    break;
+                }
+                if (!found) {
+                    here = LoopLevel(node->func, Var::outermost());
+                }
+                state.vars.insert(state.vars.begin(), new_inner.begin(), new_inner.end());
+            }
+        }
+        if (innermost) {
+            internal_assert(store_at.empty());
+            internal_assert(children.empty());
+            return;
+        }
+
+        for (auto s : size) {
+            num_cores /= s;
+        }
+        here.lock();
     }
 }
 

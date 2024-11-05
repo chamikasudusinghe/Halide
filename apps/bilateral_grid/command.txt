@@ -1,0 +1,3 @@
+bin/host/filter ../images/gray.png bin/host/out.png 0.1 10
+bin/host/filter ../images/gray.png bin/host/out.tiff 0.1 10
+

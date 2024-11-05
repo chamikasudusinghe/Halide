@@ -93,6 +93,11 @@ struct State {
     // user to copy-paste to freeze this schedule as permanent artifact.
     // Also fills `schedule_source`.
     void apply_schedule(const FunctionDAG &dag, const MachineParams &params);
+
+    // For tiramisu schedule annotation, this function was added to only print schedules
+    // without actual application of schedules.
+    void print_schedule_only(const FunctionDAG &dag, const MachineParams &params,
+		map<string, string> &schedule_map);
 };
 
 }  // namespace Autoscheduler

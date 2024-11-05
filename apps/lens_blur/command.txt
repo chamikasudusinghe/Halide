@@ -1,0 +1,1 @@
+bin/host/process ../images/rgb_small.png 32 13 0.5 32 3 bin/host/out.png
