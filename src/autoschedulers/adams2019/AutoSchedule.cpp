@@ -69,6 +69,10 @@
 #include "State.h"
 #include "Timer.h"
 
+#ifdef USE_LIBTORCH_COST_MODEL
+#include "LibTorchCostModel.h"
+#endif
+
 #ifdef _WIN32
 #include <io.h>
 #define _isatty isatty;
@@ -524,7 +528,14 @@ void generate_schedule(const std::vector<Function> &outputs,
 
     std::mt19937 rng((uint32_t)params.random_dropout_seed);
 
-    string weights_in_path = params.weights_path;
+    // This allows users to override the default weights path via environment variable
+    string weights_in_path = get_env_variable("HL_WEIGHTS_DIR");
+    if (weights_in_path.empty()) {
+        weights_in_path = params.weights_path;
+        aslog(1) << "AutoSchedule: HL_WEIGHTS_DIR not set, using params.weights_path: " << weights_in_path << "\n";
+    } else {
+        aslog(1) << "AutoSchedule: Using HL_WEIGHTS_DIR: " << weights_in_path << "\n";
+    }
     string weights_out_path;  // deliberately empty
 
     string randomize_weights_str = get_env_variable("HL_RANDOMIZE_WEIGHTS");
@@ -539,7 +550,24 @@ void generate_schedule(const std::vector<Function> &outputs,
     // Construct a cost model to use to evaluate states. Currently we
     // just have the one, but it's an abstract interface, so others
     // can be slotted in for experimentation.
-    std::unique_ptr<CostModel> cost_model = make_default_cost_model(weights_in_path, weights_out_path, randomize_weights);
+    std::unique_ptr<CostModel> cost_model;
+    
+    // Check if we should use libtorch cost model
+    string use_libtorch_str = get_env_variable("HL_USE_LIBTORCH_COST_MODEL");
+    bool use_libtorch = use_libtorch_str == "1";
+    
+#ifdef USE_LIBTORCH_COST_MODEL
+    if (use_libtorch) {
+        aslog(1) << "Using LibTorch-based cost model\n";
+        cost_model = make_libtorch_cost_model(weights_in_path, weights_out_path, randomize_weights);
+    } else {
+        aslog(1) << "Using default Halide-based cost model\n";
+        cost_model = make_default_cost_model(weights_in_path, weights_out_path, randomize_weights);
+    }
+#else
+    aslog(1) << "Using default Halide-based cost model (libtorch not available)\n";
+    cost_model = make_default_cost_model(weights_in_path, weights_out_path, randomize_weights);
+#endif
     internal_assert(cost_model != nullptr);
 
     IntrusivePtr<State> optimal;
