@@ -156,13 +156,16 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     : weights_in_path(weights_in_path),
       weights_out_path(weights_out_path),
       randomize_weights(randomize_weights) {
-    // Initialize LibTorch - set thread settings for performance
-    // Use a reasonable number of threads (4-8) for better performance
-    // Too many threads can cause contention, too few wastes CPU
-    int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
-    if (num_threads == 0) num_threads = 4;  // Fallback if hardware_concurrency fails
-    torch::set_num_threads(num_threads);
-    torch::set_num_interop_threads(1);  // Keep interop threads low to avoid overhead
+    
+    // Set thread settings for performance
+    // Use single thread to avoid contention with Halide's threading
+    // Halide autoscheduler manages its own parallelism, so LibTorch should not compete
+    torch::set_num_threads(1);
+    torch::set_num_interop_threads(1);
+    
+    // For better performance, this can be an option to consider
+    // int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
+    // f (num_threads == 0) num_threads = 4;  // Fallback if hardware_concurrency fails
     
     network = std::make_unique<CostModelNetwork>();
     network->eval();  // Set to evaluation mode immediately

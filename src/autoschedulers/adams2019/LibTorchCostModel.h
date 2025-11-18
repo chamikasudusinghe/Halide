@@ -57,7 +57,7 @@ private:
     int cursor = 0;
     int num_stages = 0;
     int num_cores = 0;
-    int batch_size = 256;  // Larger batch size for better performance (reduces overhead)
+    int batch_size = 1024;  // Match original DefaultCostModel batch size for better performance
     
     // Memory pool for tensor reuse
     TensorMemoryPool tensor_pool;
