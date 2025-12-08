@@ -8,6 +8,7 @@
 #include "LibTorchCostModelOptimizations.h"
 #include "LibTorchWeights.h"
 #include "LibTorchFeatureConverter.h"
+#include "ICostModelNetwork.h"
 #include <algorithm>
 #include <cmath>
 #include <ctime>
@@ -29,7 +30,7 @@ static std::string get_env_variable(const std::string &name) {
     return val ? std::string(val) : std::string();
 }
 
-CostModelNetwork::CostModelNetwork() {
+Adams2019Network::Adams2019Network() {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
     // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
@@ -54,7 +55,7 @@ CostModelNetwork::CostModelNetwork() {
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
 }
 
-void CostModelNetwork::load_weights(const LibTorchWeights &w) {
+void Adams2019Network::load_weights(const LibTorchWeights &w) {
     // Use pre-computed weights from LibTorchWeights (already optimized)
     // Store raw weights in head1_conv_raw (for saving)
     auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
@@ -76,7 +77,7 @@ void CostModelNetwork::load_weights(const LibTorchWeights &w) {
     trunk_conv_stage2->weight.data() = w.trunk_filter_stage2;
 }
 
-void CostModelNetwork::save_weights(LibTorchWeights &w) const {
+void Adams2019Network::save_weights(LibTorchWeights &w) const {
     // Save head1 weights from raw conv (not sigmoided)
     auto head1_w = head1_conv_raw->weight.data();
     head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
@@ -98,7 +99,7 @@ void CostModelNetwork::save_weights(LibTorchWeights &w) const {
     w.trunk_bias = trunk_conv_stage1->bias.data().clone();
 }
 
-torch::Tensor CostModelNetwork::forward(const torch::Tensor &pipeline_features,
+torch::Tensor Adams2019Network::forward(const torch::Tensor &pipeline_features,
                                        const torch::Tensor &schedule_features,
                                        int num_stages,
                                        int batch_size) {
@@ -167,58 +168,93 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     // int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
     // f (num_threads == 0) num_threads = 4;  // Fallback if hardware_concurrency fails
     
-    network = std::make_unique<CostModelNetwork>();
+    // Determine which model to use based on environment variable or default
+    std::string model_type = get_env_variable("HL_COST_MODEL_TYPE");
+    if (model_type.empty()) {
+        model_type = "adams2019";  // Default to Adams2019
+    }
+    
+    // Check if weights_in_path points to a .pt file (custom model)
+    if (!weights_in_path.empty() && 
+        weights_in_path.size() >= 3 && 
+        weights_in_path.substr(weights_in_path.size() - 3) == ".pt" &&
+        model_type == "adams2019") {
+        // If it's a .pt file and no explicit model type, try loading as custom model
+        std::ifstream test_file(weights_in_path);
+        if (test_file.good()) {
+            // File exists, could be a full model or just weights
+            // Try to load as custom model first
+            model_type = weights_in_path;
+        }
+        test_file.close();
+    }
+    
+    // Create the appropriate network
+    network = create_cost_model_network(model_type, weights_in_path);
+    if (!network) {
+        aslog(0) << "LibTorchCostModel: Failed to create network, falling back to Adams2019\n";
+        network = std::make_unique<Adams2019Network>();
+    }
     network->eval();  // Set to evaluation mode immediately
     
     // Load weights using optimized LibTorchWeights
+    // Only load weights if it's an Adams2019 network (custom models are loaded in factory)
     bool need_randomize = randomize_weights;
     string actual_weights_path = weights_in_path;
+    
+    // Check if we have an Adams2019 network that needs weight loading
+    bool is_adams2019 = (dynamic_cast<Adams2019Network*>(network.get()) != nullptr);
     
     // If weights_in_path is empty, try environment variable
     if (actual_weights_path.empty()) {
         actual_weights_path = get_env_variable("HL_WEIGHTS_DIR");
     }
     
-    if (!actual_weights_path.empty()) {
-        aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
-        
-        // Try LibTorch format first (faster, direct loading)
-        // Check if file ends with .pt (PyTorch/LibTorch format)
-        bool loaded = false;
-        if (actual_weights_path.size() >= 3 && 
-            actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
-            loaded = weights.load_from_libtorch_file(actual_weights_path);
-            if (loaded) {
-                aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
+    // Only load weights for Adams2019 networks (custom models are already loaded)
+    if (is_adams2019) {
+        if (!actual_weights_path.empty()) {
+            aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
+            
+            // Try LibTorch format first (faster, direct loading)
+            // Check if file ends with .pt (PyTorch/LibTorch format)
+            bool loaded = false;
+            if (actual_weights_path.size() >= 3 && 
+                actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
+                loaded = weights.load_from_libtorch_file(actual_weights_path);
+                if (loaded) {
+                    aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
+                }
             }
-        }
-        
-        // Fall back to Halide format if LibTorch format failed or not .pt file
-        if (!loaded) {
-            loaded = weights.load_from_file(actual_weights_path);
-            if (loaded) {
-                aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
+            
+            // Fall back to Halide format if LibTorch format failed or not .pt file
+            if (!loaded) {
+                loaded = weights.load_from_file(actual_weights_path);
+                if (loaded) {
+                    aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
+                }
             }
-        }
-        
-        if (!loaded) {
-            aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
+            
+            if (!loaded) {
+                aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
+                need_randomize = true;
+            }
+        } else {
+            aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
             need_randomize = true;
         }
+        
+        if (need_randomize) {
+            auto seed = time(nullptr);
+            aslog(1) << "Randomizing weights using seed = " << seed << "\n";
+            weights.randomize((uint32_t)seed);
+        }
+        
+        // Load weights into network
+        network->load_weights(weights);
+        network->eval();  // Ensure still in eval mode after loading weights
     } else {
-        aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
-        need_randomize = true;
+        aslog(1) << "LibTorchCostModel: Using custom model, weights already loaded\n";
     }
-    
-    if (need_randomize) {
-        auto seed = time(nullptr);
-        aslog(1) << "Randomizing weights using seed = " << seed << "\n";
-        weights.randomize((uint32_t)seed);
-    }
-    
-    // Load weights into network
-    network->load_weights(weights);
-    network->eval();  // Ensure still in eval mode after loading weights
 
     // Warm up LibTorch with a dummy forward pass to avoid first-call overhead
     // This initializes any lazy operations and can prevent hangs

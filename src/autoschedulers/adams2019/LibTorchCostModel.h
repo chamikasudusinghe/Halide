@@ -5,6 +5,7 @@
 #include "LibTorchWeights.h"
 #include "LibTorchFeatureConverter.h"
 #include "LibTorchCostModelOptimizations.h"
+#include "ICostModelNetwork.h"
 #include <torch/torch.h>
 #include <string>
 #include <memory>
@@ -17,19 +18,32 @@ struct Adams2019Params;
 } 
 }
 
-// Neural network module for the cost model
-class CostModelNetwork : public torch::nn::Module {
+/**
+    Adams2019 network architecture implementation.
+ */
+class Adams2019Network : public torch::nn::Module, public ICostModelNetwork {
 public:
-    CostModelNetwork();
+    Adams2019Network();
     
-    // Forward pass
+    // ICostModelNetwork interface
     torch::Tensor forward(const torch::Tensor &pipeline_features,
                          const torch::Tensor &schedule_features,
                          int num_stages,
-                         int batch_size);
+                         int batch_size) override;
 
-    void load_weights(const LibTorchWeights &w);
-    void save_weights(LibTorchWeights &w) const;
+    void load_weights(const LibTorchWeights &w) override;
+    void save_weights(LibTorchWeights &w) const override;
+    
+    int get_num_output_channels() const override { return conv1_channels; }
+    void eval() override { this->torch::nn::Module::eval(); }
+    void train() override { this->torch::nn::Module::train(); }
+    std::vector<torch::Tensor> parameters() override {
+        std::vector<torch::Tensor> params;
+        for (auto &param : this->torch::nn::Module::parameters()) {
+            params.push_back(param);
+        }
+        return params;
+    }
 
 private:
     // Head1: processes pipeline features (40x7) -> 8 channels
@@ -47,9 +61,37 @@ private:
     torch::nn::Conv1d trunk_conv_stage2{nullptr};  // Processes head2: (24) -> (32)
 };
 
+/**
+ * Wrapper for loading custom models from .pt files. This allows loading any PyTorch/LibTorch model that implements the interface.
+ */
+class CustomModelNetwork : public ICostModelNetwork {
+public:
+    CustomModelNetwork(const std::string &model_path);
+    
+    torch::Tensor forward(const torch::Tensor &pipeline_features,
+                         const torch::Tensor &schedule_features,
+                         int num_stages,
+                         int batch_size) override;
+    
+    void load_weights(const LibTorchWeights &w) override;
+    void save_weights(LibTorchWeights &w) const override;
+    
+    int get_num_output_channels() const override;
+    void eval() override;
+    void train() override;
+    std::vector<torch::Tensor> parameters() override;
+    
+    bool load_from_file(const std::string &path) override;
+    bool save_to_file(const std::string &path) const override;
+
+private:
+    std::shared_ptr<torch::nn::Module> model_;
+    int num_output_channels_;
+};
+
 class LibTorchCostModel : public CostModel {
 private:
-    std::unique_ptr<CostModelNetwork> network;
+    std::unique_ptr<ICostModelNetwork> network;  // Use interface for flexibility
     LibTorchWeights weights;  // Use optimized LibTorch weights instead of Halide Weights
     std::vector<torch::Tensor> pipeline_feat_queue;
     std::vector<torch::Tensor> schedule_feat_queue;
