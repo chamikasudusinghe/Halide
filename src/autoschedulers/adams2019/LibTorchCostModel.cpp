@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -172,21 +173,6 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     std::string model_type = get_env_variable("HL_COST_MODEL_TYPE");
     if (model_type.empty()) {
         model_type = "adams2019";  // Default to Adams2019
-    }
-    
-    // Check if weights_in_path points to a .pt file (custom model)
-    if (!weights_in_path.empty() && 
-        weights_in_path.size() >= 3 && 
-        weights_in_path.substr(weights_in_path.size() - 3) == ".pt" &&
-        model_type == "adams2019") {
-        // If it's a .pt file and no explicit model type, try loading as custom model
-        std::ifstream test_file(weights_in_path);
-        if (test_file.good()) {
-            // File exists, could be a full model or just weights
-            // Try to load as custom model first
-            model_type = weights_in_path;
-        }
-        test_file.close();
     }
     
     // Create the appropriate network

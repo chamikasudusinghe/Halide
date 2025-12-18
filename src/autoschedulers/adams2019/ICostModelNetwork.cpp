@@ -242,13 +242,19 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     const std::string &model_type_or_path,
     const std::string &weights_path) {
     
-    // Check if it's a file path (ends with .pt)
-    if (model_type_or_path.size() >= 3 && 
-        model_type_or_path.substr(model_type_or_path.size() - 3) == ".pt") {
-        // For now, treat .pt files as custom models with Adams2019 architecture
-        // Future: could load full model from file
-        aslog(1) << "CustomModelNetwork: .pt file specified, using Adams2019 architecture with random weights\n";
+    // If HL_COST_MODEL_TYPE is a path, treat it as "custom network + load weights/model from that path".
+    const bool ends_with_pt = (model_type_or_path.size() >= 3 &&
+                              model_type_or_path.substr(model_type_or_path.size() - 3) == ".pt");
+    const bool ends_with_weights = (model_type_or_path.size() >= 8 &&
+                                   model_type_or_path.substr(model_type_or_path.size() - 8) == ".weights");
+    if (ends_with_pt || ends_with_weights) {
         auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
+        if (custom_model->load_from_file(model_type_or_path)) {
+            aslog(1) << "CustomModelNetwork: Loaded weights from " << model_type_or_path << "\n";
+        } else {
+            aslog(0) << "CustomModelNetwork: Failed to load from " << model_type_or_path
+                     << "; continuing with random weights\n";
+        }
         return std::move(custom_model);
     }
     

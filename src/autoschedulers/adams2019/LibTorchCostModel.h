@@ -61,34 +61,6 @@ private:
     torch::nn::Conv1d trunk_conv_stage2{nullptr};  // Processes head2: (24) -> (32)
 };
 
-/**
- * Wrapper for loading custom models from .pt files. This allows loading any PyTorch/LibTorch model that implements the interface.
- */
-class CustomModelNetwork : public ICostModelNetwork {
-public:
-    CustomModelNetwork(const std::string &model_path);
-    
-    torch::Tensor forward(const torch::Tensor &pipeline_features,
-                         const torch::Tensor &schedule_features,
-                         int num_stages,
-                         int batch_size) override;
-    
-    void load_weights(const LibTorchWeights &w) override;
-    void save_weights(LibTorchWeights &w) const override;
-    
-    int get_num_output_channels() const override;
-    void eval() override;
-    void train() override;
-    std::vector<torch::Tensor> parameters() override;
-    
-    bool load_from_file(const std::string &path) override;
-    bool save_to_file(const std::string &path) const override;
-
-private:
-    std::shared_ptr<torch::nn::Module> model_;
-    int num_output_channels_;
-};
-
 class LibTorchCostModel : public CostModel {
 private:
     std::unique_ptr<ICostModelNetwork> network;  // Use interface for flexibility

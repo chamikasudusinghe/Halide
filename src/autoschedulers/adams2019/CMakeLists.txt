@@ -155,6 +155,7 @@ target_link_libraries(Halide_Adams2019 PRIVATE ASLog ParamParser adams2019_cost_
 if(USE_LIBTORCH)
     target_sources(Halide_Adams2019 PRIVATE 
         LibTorchCostModel.cpp
+        ICostModelNetwork.cpp
         LibTorchCostModelOptimizations.cpp
         LibTorchWeights.cpp
         LibTorchFeatureConverter.cpp
@@ -193,6 +194,7 @@ if(USE_LIBTORCH)
     # and should override -fno-rtti from INTERFACE properties
     set_source_files_properties(
         LibTorchCostModel.cpp
+        ICostModelNetwork.cpp
         LibTorchCostModelOptimizations.cpp
         LibTorchWeights.cpp
         LibTorchFeatureConverter.cpp

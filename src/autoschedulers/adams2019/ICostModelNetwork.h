@@ -1,9 +1,11 @@
 #ifndef I_COST_MODEL_NETWORK_H
 #define I_COST_MODEL_NETWORK_H
 
+#include "NetworkSize.h"
 #include <torch/torch.h>
 #include <string>
 #include <memory>
+#include <vector>
 
 namespace Halide {
 
