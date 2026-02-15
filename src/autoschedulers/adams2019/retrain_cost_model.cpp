@@ -14,6 +14,9 @@
 #include "DefaultCostModel.h"
 #include "HalideBuffer.h"
 #include "NetworkSize.h"
+#include "LibTorchWeights.h"
+#include "LibTorchCostModel.h"
+#include <torch/torch.h>
 
 namespace {
 
@@ -29,7 +32,7 @@ struct Flags {
     std::vector<float> rates = {0.0001f};
     string initial_weights_path;
     string weights_out_path;
-    int num_cores = 32;
+    int num_cores = 4;
     bool randomize_weights = false;
     string best_benchmark_path;
     string best_schedule_path;
@@ -209,6 +212,7 @@ map<int, PipelineSample> load_samples(const Flags &flags) {
         // std::cout << "Runtime: " << runtime << "\n";
 
         int pipeline_id = *((int32_t *)(&scratch[num_features + 1]));
+		//std::cerr<<"pipeline ID: "<<pipeline_id<<"\n";
         const int schedule_id = *((int32_t *)(&scratch[num_features + 2]));
 
         if (runtime < best_runtime) {
@@ -373,9 +377,9 @@ int main(int argc, char **argv) {
     auto samples = load_samples(flags);
 
     // Iterate through the pipelines
-    vector<std::unique_ptr<DefaultCostModel>> tpp;
+    vector<std::unique_ptr<LibTorchCostModel>> tpp;
     for (int i = 0; i < kModels; i++) {
-        tpp.emplace_back(make_default_cost_model(flags.initial_weights_path, flags.weights_out_path, flags.randomize_weights));
+        tpp.emplace_back(make_libtorch_cost_model(flags.initial_weights_path, flags.weights_out_path, flags.randomize_weights));
     }
 
     std::cout.setf(std::ios::fixed, std::ios::floatfield);
@@ -384,11 +388,16 @@ int main(int argc, char **argv) {
     auto seed = time(nullptr);
     std::mt19937 rng((uint32_t)seed);
 
-    std::cout << "Iterating over " << samples.size() << " samples using seed = " << seed << "\n";
+	// loaded samples into variable "samples".
+	// created random number generator with time as seed.
+
+    std::cout << "Test: Iterating over " << samples.size() << " samples using seed = " << seed << "\n";
     decltype(samples) validation_set;
     uint64_t unique_schedules = 0;
     if (samples.size() > 16) {
+		std::cerr<<"sample size is >16 \n";
         for (const auto &p : samples) {
+			std::cerr<<"inside p:samples loop iteration\n";
             unique_schedules += p.second.schedules.size();
             // Whether or not a pipeline is part of the validation set
             // can't be a call to rand. It must be a fixed property of a
@@ -398,13 +407,24 @@ int main(int argc, char **argv) {
             // schedule will do as a hash.
             if ((p.second.pipeline_hash & 7) == 0) {
                 validation_set.insert(p);
-            }
+				std::cerr<<"inserting into validation set\n";
+            } else {
+
+				std::cerr<<"part of training set\n";
+			}
         }
 
         for (const auto &p : validation_set) {
             samples.erase(p.first);
         }
-    }
+    } else{
+
+		std::cerr<<"Can't process data --- Less than 16 pipelines\n";
+	}
+
+	// so far we've divided data into training and validations sets by using the pipeline_hash.
+	// hence, if a pipeline is chosen to be in the validation set, all schedules of that pipeline
+	// are added to the validation set
 
     std::cout << "Number of unique schedules: " << unique_schedules << "\n";
 
@@ -438,6 +458,11 @@ int main(int argc, char **argv) {
                     auto &tp = tpp[model];
 
                     for (auto &p : train ? samples : validation_set) {
+						// if we're training multiple models, for each model:
+						// 1. we process a given batch (a set of schedules within a sample) with a probability governed by (rng() & 1)
+						// 		1. we enqueue the batch onto our cost model and let it predict the runtimes in p.second.schedules[i].prediction[model].
+						// 		2. we also collect the actual runtimes for all schedules of the batch in a data Buffer called runtimes.
+						// 		3. we run back-propagation to find the 
                         if (kModels > 1 && rng() & 1) {
                             continue;  // If we are training multiple kModels, allow them to diverge.
                         }
@@ -445,7 +470,9 @@ int main(int argc, char **argv) {
                             continue;
                         }
                         tp->reset();
-                        tp->set_pipeline_features(p.second.pipeline_features, flags.num_cores);
+						//std::cerr<<"	setting pipeline features\n";
+                        tp->set_pipeline_features(LibTorchWeights::buffer_to_tensor_public(p.second.pipeline_features).permute({2, 0, 1}).contiguous(), 
+													flags.num_cores);
 
                         size_t batch_size = std::min((size_t)1024, p.second.schedules.size());
 
@@ -459,15 +486,63 @@ int main(int argc, char **argv) {
 
                         auto it = p.second.schedules.begin();
                         std::advance(it, first);
+
+						 /* *the goal is to copy schedule features from our sched data structure into some internal buffer within the queue
+						  *However, for the libtorch version, our schedule_queue will just be a vector we can push_back to.
+						  *That being said, copying is not exactly straightforward because sched.schedule_features is a Buffer type, whereas
+						  *our queue elements are torch::Tensor type. So we must do the conversion first; we can use LibTorchWeights::buffer_to_tensor
+						  *for the same. */
                         for (size_t j = 0; j < batch_size; j++) {
+							//std::cerr<<"		pushing schedule to schedule_queue\n";
                             auto &sched = it->second;
-                            Halide::Runtime::Buffer<float> buf;
-                            tp->enqueue(p.second.num_stages, &buf, &sched.prediction[model]);
-                            runtimes(j) = sched.runtimes[0];
-                            if (runtimes(j) < runtimes(fastest_idx)) {
-                                fastest_idx = j;
-                            }
-                            buf.copy_from(sched.schedule_features);
+							/* The enqueue operation in DefaultCostModel first ensures we have a buffer of the right size, then
+							 * passes to us a handle to the buffer so we can store schedule features there. For libtorch, though,
+							 * we need only to push_back our torch::Tensor onto an std::vector; bounds checking is not quite required. */
+
+							// .get() asks the unique pointer to return a raw pointer.
+							DefaultCostModel* default_cast = (dynamic_cast<DefaultCostModel*>(tp.get()));
+							bool is_default = (default_cast != nullptr);
+							LibTorchCostModel* libtorch_cast = (dynamic_cast<LibTorchCostModel*>(tp.get()));
+							bool is_libtorch = (libtorch_cast != nullptr);
+
+							if(is_default) {
+								Halide::Runtime::Buffer<float> buf;
+								default_cast->enqueue(p.second.num_stages, &buf, &sched.prediction[model]);
+								runtimes(j) = sched.runtimes[0];
+								if (runtimes(j) < runtimes(fastest_idx)) {
+									fastest_idx = j;
+								}
+								buf.copy_from(sched.schedule_features);
+							} else if(is_libtorch) {
+								//torch::Tensor schedule_features = LibTorchWeights::buffer_to_tensor(sched.schedule_features);
+								std::cerr<<"		is_libtorch is true\n";
+								std::vector<torch::Tensor> &schedule_queue_ref = libtorch_cast->enqueue(p.second.num_stages, &sched.prediction[model]);
+								runtimes(j) = sched.runtimes[0];
+								if(runtimes(j) < runtimes(fastest_idx)) {
+									fastest_idx = j;
+								}
+								// pushing schedules of the form (39, num_stages) instead of (num_stages, 39) because 39 forms the channels dimension
+								// in that convolution, and not num_stages.
+								//
+								//
+								// DEBUGGING S ========
+								//auto sample = LibTorchWeights::buffer_to_tensor_public(sched.schedule_features);
+								//std::cerr << "sample.sizes() BEFORE permute: " << sample.sizes() << "\n";
+
+								//// after permute (if you permute)
+								//auto sample2 = sample.permute({1,0}).contiguous();
+								//std::cerr << "sample2.sizes() AFTER permute: " << sample2.sizes() << "\n";
+
+								// DEBUGGING S ========
+								//
+								//
+								schedule_queue_ref.push_back(LibTorchWeights::buffer_to_tensor_public(sched.schedule_features).permute({1, 0}).contiguous());
+
+								// DEBUGGING: after stack (the tensor you feed to the model)
+								//auto batch_tensor = torch::stack(schedule_queue_ref); // or how you make batch
+								//std::cerr << "batch_tensor.sizes(): " << batch_tensor.sizes() << "\n";
+
+							}
                             it++;
                         }
 
@@ -494,6 +569,8 @@ int main(int argc, char **argv) {
                             tp->evaluate_costs();
                         }
 
+						// for each schedule, if its prediction is greater than the prediction of the fastest
+						// schedule, that is good++
                         if (true) {
                             int good = 0, bad = 0;
                             for (auto &sched : p.second.schedules) {

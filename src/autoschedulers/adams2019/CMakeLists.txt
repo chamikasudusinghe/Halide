@@ -72,14 +72,14 @@ if (APPLE AND num_archs GREATER 1)
 endif ()
 
 # retrain_cost_model
-if (WITH_UTILS)
-    add_executable(adams2019_retrain_cost_model
-                   DefaultCostModel.cpp
-                   Weights.cpp
-                   retrain_cost_model.cpp
-                   $<TARGET_OBJECTS:adams2019_weights_obj>)
-    target_link_libraries(adams2019_retrain_cost_model PRIVATE ASLog adams2019_cost_model adams2019_train_cost_model Halide::Halide Halide::Plugin)
-endif ()
+#if (WITH_UTILS)
+    #add_executable(adams2019_retrain_cost_model
+                   #DefaultCostModel.cpp
+                   #Weights.cpp
+                   #retrain_cost_model.cpp
+                   #$<TARGET_OBJECTS:adams2019_weights_obj>)
+	#target_link_libraries(adams2019_retrain_cost_model PRIVATE ASLog adams2019_cost_model adams2019_train_cost_model Halide::Halide Halide::Plugin)
+#endif ()
 
 # =================================================================
 ##
@@ -156,6 +156,7 @@ if(USE_LIBTORCH)
     target_sources(Halide_Adams2019 PRIVATE 
         LibTorchCostModel.cpp
         ICostModelNetwork.cpp
+		CustomNetwork0.cpp
         LibTorchCostModelOptimizations.cpp
         LibTorchWeights.cpp
         LibTorchFeatureConverter.cpp
@@ -195,6 +196,7 @@ if(USE_LIBTORCH)
     set_source_files_properties(
         LibTorchCostModel.cpp
         ICostModelNetwork.cpp
+		CustomNetwork0.cpp
         LibTorchCostModelOptimizations.cpp
         LibTorchWeights.cpp
         LibTorchFeatureConverter.cpp
@@ -261,7 +263,97 @@ if(USE_LIBTORCH)
     )
     set_property(TARGET adams2019_validate_weights_conversion PROPERTY CXX_STANDARD 14)
     set_property(TARGET adams2019_validate_weights_conversion PROPERTY CXX_STANDARD_REQUIRED ON)
+	# If the retrain tool was created earlier, attach Torch include/libs now
+
+	#if (WITH_UTILS AND TARGET adams2019_retrain_cost_model)
+		#target_include_directories(adams2019_retrain_cost_model PRIVATE ${TORCH_INCLUDE_DIRS})
+		#target_link_libraries(adams2019_retrain_cost_model PRIVATE ${TORCH_LIBRARIES})
+		#set_source_files_properties(
+            #retrain_cost_model.cpp
+            #PROPERTIES COMPILE_OPTIONS "-frtti"
+        #)
+		#target_compile_options(adams2019_retrain_cost_model PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-frtti>)
+	#endif()
+
 endif()
+
+
+# ========================== BHsketch S ===================================
+# retrain_cost_model
+if (WITH_UTILS)
+    # Base sources needed for both Halide and LibTorch versions
+    set(RETRAIN_SOURCES
+        DefaultCostModel.cpp
+        Weights.cpp
+        retrain_cost_model.cpp
+        $<TARGET_OBJECTS:adams2019_weights_obj>
+    )
+    
+    # Add LibTorch sources if available
+    if(USE_LIBTORCH)
+        list(APPEND RETRAIN_SOURCES
+            LibTorchCostModel.cpp
+            ICostModelNetwork.cpp
+            CustomNetwork0.cpp
+            LibTorchCostModelOptimizations.cpp
+            LibTorchWeights.cpp
+            LibTorchFeatureConverter.cpp
+        )
+    endif()
+    
+    # Create the executable with all sources
+    add_executable(adams2019_retrain_cost_model ${RETRAIN_SOURCES})
+    
+    # Link base libraries
+    target_link_libraries(adams2019_retrain_cost_model PRIVATE 
+        ASLog 
+        adams2019_cost_model 
+        adams2019_train_cost_model 
+        Halide::Halide 
+        Halide::Plugin
+    )
+    
+    # Add LibTorch support if available
+    if(USE_LIBTORCH)
+        target_compile_definitions(adams2019_retrain_cost_model PRIVATE USE_LIBTORCH_COST_MODEL)
+        target_include_directories(adams2019_retrain_cost_model PRIVATE ${TORCH_INCLUDE_DIRS})
+        target_link_libraries(adams2019_retrain_cost_model PRIVATE ${TORCH_LIBRARIES})
+        
+        # Enable RTTI for LibTorch files
+        set_source_files_properties(
+            retrain_cost_model.cpp
+			DefaultCostModel.cpp
+            LibTorchCostModel.cpp
+            ICostModelNetwork.cpp
+            CustomNetwork0.cpp
+            LibTorchCostModelOptimizations.cpp
+            LibTorchWeights.cpp
+            LibTorchFeatureConverter.cpp
+            PROPERTIES COMPILE_OPTIONS "-frtti"
+        )
+        
+        target_compile_options(adams2019_retrain_cost_model PRIVATE 
+            $<$<COMPILE_LANGUAGE:CXX>:-frtti>
+        )
+        
+        # Set C++ standard
+        set_property(TARGET adams2019_retrain_cost_model PROPERTY CXX_STANDARD 14)
+        set_property(TARGET adams2019_retrain_cost_model PROPERTY CXX_STANDARD_REQUIRED ON)
+        
+        # Add rpath for LibTorch libraries
+        if(DEFINED LIBTORCH_ROOT)
+            get_filename_component(TORCH_LIB_DIR "${LIBTORCH_ROOT}/lib" ABSOLUTE)
+            if(EXISTS "${TORCH_LIB_DIR}")
+                set_target_properties(adams2019_retrain_cost_model PROPERTIES
+                    INSTALL_RPATH "${TORCH_LIB_DIR}"
+                    BUILD_WITH_INSTALL_RPATH TRUE
+                    BUILD_RPATH "${TORCH_LIB_DIR}"
+                )
+            endif()
+        endif()
+    endif()
+endif()
+# ========================== BHsketch E ===================================
 
 # ====================================================
 # Auto-tuning support utilities.

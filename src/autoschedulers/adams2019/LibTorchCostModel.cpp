@@ -15,6 +15,10 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+//BHsketch S ----
+#include <chrono>
+#include "CustomNetwork0.h"
+//BHsketch E ----
 
 using Halide::Internal::aslog;
 using Halide::Internal::PipelineFeatures;
@@ -29,6 +33,36 @@ using namespace Internal::Autoscheduler;
 static std::string get_env_variable(const std::string &name) {
     const char *val = std::getenv(name.c_str());
     return val ? std::string(val) : std::string();
+}
+
+Adams2019Network::Adams2019Network(const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(architecture_type, use_random_weights) {
+    // Head1: Conv2d for pipeline features
+    // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
+    // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
+    head1_conv_raw = register_module("head1_conv_raw", 
+        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
+            .stride({head1_h, head1_w}).bias(true)));
+    head1_conv = register_module("head1_conv", 
+        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
+            .stride({head1_h, head1_w}).bias(true)));
+    
+    // Head2: Conv1d for schedule features  
+    // Input: (batch, head2_w=39, num_stages) -> Output: (batch, head2_channels=24, num_stages)
+    head2_conv = register_module("head2_conv",
+        torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_w, head2_channels, 1).bias(true)));
+    
+    // Trunk: Two-stage conv matching original architecture
+    // Stage1: processes head1 (8 channels) -> 32 channels
+    trunk_conv_stage1 = register_module("trunk_conv_stage1",
+        torch::nn::Conv1d(torch::nn::Conv1dOptions(head1_channels, conv1_channels, 1).bias(true)));
+    // Stage2: processes head2 (24 channels) -> 32 channels (no bias, adds to stage1)
+    trunk_conv_stage2 = register_module("trunk_conv_stage2",
+        torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
+
+	if(use_random_weights_) {
+		// currently just uses the implementation in its parent class
+		randomize_weights();
+	}
 }
 
 Adams2019Network::Adams2019Network() {
@@ -54,7 +88,9 @@ Adams2019Network::Adams2019Network() {
     // Stage2: processes head2 (24 channels) -> 32 channels (no bias, adds to stage1)
     trunk_conv_stage2 = register_module("trunk_conv_stage2",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
+
 }
+
 
 void Adams2019Network::load_weights(const LibTorchWeights &w) {
     // Use pre-computed weights from LibTorchWeights (already optimized)
@@ -104,6 +140,7 @@ torch::Tensor Adams2019Network::forward(const torch::Tensor &pipeline_features,
                                        const torch::Tensor &schedule_features,
                                        int num_stages,
                                        int batch_size) {
+	
     // Head1: Process pipeline features
     // pipeline_features: (num_stages, head1_w, head1_h)
     // Batch all stages at once for better performance
@@ -190,6 +227,7 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     
     // Check if we have an Adams2019 network that needs weight loading
     bool is_adams2019 = (dynamic_cast<Adams2019Network*>(network.get()) != nullptr);
+    bool is_custom0 = (dynamic_cast<CustomNetwork0*>(network.get()) != nullptr);
     
     // If weights_in_path is empty, try environment variable
     if (actual_weights_path.empty()) {
@@ -197,9 +235,10 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     }
     
     // Only load weights for Adams2019 networks (custom models are already loaded)
-    if (is_adams2019) {
+    if (is_adams2019 || is_custom0) {
         if (!actual_weights_path.empty()) {
             aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
+			std::cerr << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
             
             // Try LibTorch format first (faster, direct loading)
             // Check if file ends with .pt (PyTorch/LibTorch format)
@@ -209,6 +248,7 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
                 loaded = weights.load_from_libtorch_file(actual_weights_path);
                 if (loaded) {
                     aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
+					std::cerr << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
                 }
             }
             
@@ -217,11 +257,13 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
                 loaded = weights.load_from_file(actual_weights_path);
                 if (loaded) {
                     aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
+					std::cerr << "LibTorchCostModel: Loaded weights from Halide format\n";
                 }
             }
             
             if (!loaded) {
                 aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
+				std::cerr << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
                 need_randomize = true;
             }
         } else {
@@ -236,6 +278,15 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
         }
         
         // Load weights into network
+		//std::cerr<<"LibTorchCostModel: trunk_fc_0->weight: "<<weights.trunk_fc_0<<"\n";
+		//std::cerr<<"LibTorchCostModel: trunk_fc_0->bias: "<<weights.trunk_fc_0_bias<<"\n";
+		if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
+			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 contains NaN values!\n";
+		}else{
+			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 does NOT NaN values\n";
+		}
+
+
         network->load_weights(weights);
         network->eval();  // Ensure still in eval mode after loading weights
     } else {
@@ -275,9 +326,21 @@ void LibTorchCostModel::set_pipeline_features(const FunctionDAG &dag,
     num_stages = 0; // Will be set in enqueue() based on schedule_feats.size()
 }
 
+void LibTorchCostModel::set_pipeline_features(const torch::Tensor &pf_tensor, int n) {
+	
+	pipeline_feat_queue.clear();
+	pipeline_feat_queue.push_back(pf_tensor);
+	num_cores=n;
+
+}
+
 void LibTorchCostModel::enqueue(const FunctionDAG &dag,
                                const StageMapOfScheduleFeatures &schedule_feats,
                                double *cost_ptr) {
+	//BHsketch S ----
+	// timing the forward inference and adding it to a collective duration variable collectiveInferenceDuration 
+	auto enqueueStartTime = std::chrono::high_resolution_clock::now();
+	//BHsketch E ----
     // Set num_stages from schedule_feats.size() (like DefaultCostModel does)
     // This can vary between different calls to enqueue
     num_stages = (int)schedule_feats.size();
@@ -293,9 +356,62 @@ void LibTorchCostModel::enqueue(const FunctionDAG &dag,
     cost_ptrs.push_back(cost_ptr);
     cursor++;
     
+	//BHsketch S ----
+	auto enqueueEndTime = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<float, std::milli> enqueueDuration = enqueueEndTime - enqueueStartTime;
+	this->collectiveEnqueueDuration += enqueueDuration;
+	//aslog(1) << "Updated collective enqueue time: " << this->collectiveEnqueueDuration.count() << "ms \n";
+	//BHsketch E ----
+	//
     if (cursor == batch_size) {
         evaluate_costs();
     }
+}
+
+std::vector<torch::Tensor>& LibTorchCostModel::enqueue(int ns, double *cost_ptr) {
+	num_stages = ns;
+
+	// BHsketch S ---
+	// the only difference between LibTorchCostModel::enqueue and DefaultCostModel::enqueue is the
+	// fact that for libtorch, our queues are no longer halide buffers, but rather vectors
+	// of torch tensors. Thus, we call the appropriate APIs to read/store information from/to them.
+	// We don't need to do any bounds checking or return appropriate slices of the vector. Rather, 
+	// we could just pass a reference to the vector and the caller can push_back a tensor to it.
+	// BHsketch E ---
+	
+	internal_assert(pipeline_feat_queue.size() && "LibTorchCostModel::enqueue: Call set_pipeline_features before calling enqueue\n");
+	const int max_num_stages = pipeline_feat_queue[0].size(0);
+	internal_assert(num_stages <= max_num_stages)
+		<< "LibTorchCostModel::enqueue: schedule features has more stages (" << num_stages 
+		<< ") than pipeline features (" << max_num_stages << ")\n";
+
+	const int batch_size = 1024;
+	if (!schedule_feat_queue.size()) {
+		internal_assert(cursor == 0);
+		//schedule_feat_queue = Runtime::Buffer<float>(batch_size, head2_w, max_num_stages);
+		//if(!costs.data()) {
+			//internal_assert(!cost_ptrs.data());
+			//costs = Runtime::Buffer<float>(batch_size);
+			//cost_ptrs = Runtime::Buffer<double *>(batch_size);
+		//}
+
+	}
+
+	if (cursor == batch_size) {
+		evaluate_costs();
+	}
+
+	// schedule_feats is a reference to our internal queue, that will be used by the caller
+	// (say, the training pipeline) to push back a new tensor to the queue.
+	//schedule_feats = schedule_feat_queue;
+
+	// stores, within the cost model class, what location to store the predictions in when we are
+	// done evaluating this schedule with our cost model.
+	cost_ptrs.push_back(cost_ptr);
+
+	cursor++;
+	
+	return schedule_feat_queue;
 }
 
 torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Tensor &coefficients,
@@ -339,7 +455,8 @@ torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Ten
         auto inner_par = features.inner_parallelism.select(0, s);
         auto outer_par = features.outer_parallelism.select(0, s);
         auto num_tasks = torch::clamp_min(inner_par * outer_par, 1.0f);
-        auto tasks_per_core = num_tasks / (float)num_cores;
+        //auto tasks_per_core = num_tasks / (float)num_cores;
+		auto tasks_per_core = num_tasks / std::max((float)num_cores, 1.0f);
         auto idle_core_wastage = torch::ceil(tasks_per_core) / torch::clamp_min(tasks_per_core, 1.0f);
         compute_cost = compute_cost * idle_core_wastage;
         
@@ -448,10 +565,23 @@ void LibTorchCostModel::evaluate_costs() {
     // Disable gradient computation for inference (faster and uses less memory)
     torch::NoGradGuard no_grad;
     network->eval();
+
+	//BHsketch S ----
+	// timing the forward inference and adding it to a collective duration variable collectiveInferenceDuration 
+	auto inferenceStartTime = std::chrono::high_resolution_clock::now();
+	//BHsketch E ----
+													   //
     auto coefficients = network->forward(pipeline_features, schedule_features_batch, num_stages, cursor);
     
     // Compute costs from coefficients
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
+
+	//BHsketch S ----
+	auto inferenceEndTime = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<float, std::milli> inferenceDuration = inferenceEndTime - inferenceStartTime;
+	network->collectiveInferenceDuration += inferenceDuration;
+	//aslog(1) << "Updated collective inference time: " << network->collectiveInferenceDuration.count() << "ms \n";
+	//BHsketch E ----
     
     // Copy results back
     // Ensure tensor is contiguous and on CPU for efficient access
@@ -494,13 +624,30 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     }
     
     // Batch schedule features
-    auto schedule_features_batch = torch::cat(schedule_feat_queue, 0);
+	// changed cat to stack, so that it batches properly to: (num_schedules, 39, num_stages)
+	// instead of merely concatenating to get (1, 39xN, num_stages)
+    //auto schedule_features_batch = torch::cat(schedule_feat_queue, 0);
+	
+	std::cerr<<"in backprop: weights.loaded is "<<weights.is_loaded() <<"\n";
+    std::vector<torch::Tensor> transposed;
+    for (const auto &t : schedule_feat_queue) {
+        transposed.push_back(t.transpose(0, 1).contiguous()); // (head2_w, num_stages)
+    }
+    auto schedule_features_batch = torch::stack(transposed, 0).contiguous(); // (batch, head2_w, num_stages)
+    //auto schedule_features_batch = torch::stack(schedule_feat_queue);
+
     // Slice pipeline features to only use the first num_stages stages
     auto pipeline_features_full = pipeline_feat_queue[0];
     auto pipeline_features = pipeline_features_full.slice(0, 0, num_stages); // (num_stages, head1_w, head1_h)
     
     // Forward pass
     auto coefficients = network->forward(pipeline_features, schedule_features_batch, num_stages, cursor);
+	if (torch::isnan(coefficients).any().item<bool>()) {
+		std::cerr << "LibTorchCostModel::backprop, result of forward contains NaN values!\n";
+	}else{
+		std::cerr << "LibTorchCostModel::backprop, result of forward does NOT contain NaN values!\n";
+	}
+	std::cerr<<"LibTorchCostModel::backprop: before compute_costs_from_coeff, num cores is "<<num_cores<<"\n";
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
     
     // Convert true runtimes to tensor
@@ -518,6 +665,43 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     // Regularization term (penalize negative pre-ReLU values)
     // This is simplified - full implementation would need access to pre-ReLU activations
     auto loss = torch::mean(delta);
+	std::cerr<<"LibTorchCostModel::backprop, loss: "<<loss<<"\n";
+
+	std::cerr << "=== PRE-BACKWARD DEBUG ===\n";
+	std::cerr << "predictions: " << predictions << "\n";
+	std::cerr << "predictions min: " << predictions.min().item<float>() << "\n";
+	std::cerr << "predictions max: " << predictions.max().item<float>() << "\n";
+	std::cerr << "predictions has NaN: " << torch::isnan(predictions).any().item<bool>() << "\n";
+	std::cerr << "predictions has inf: " << torch::isinf(predictions).any().item<bool>() << "\n";
+	std::cerr << "predictions has negatives: " << (predictions < 0).any().item<bool>() << "\n";
+	std::cerr << "predictions has zeros: " << (predictions == 0).any().item<bool>() << "\n";
+
+	std::cerr << "true_runtimes: " << true_runtimes_tensor << "\n";
+	std::cerr << "fastest_idx: " << fastest_idx << "\n";
+	std::cerr << "fastest_runtime: " << true_runtimes_tensor[fastest_idx].item<float>() << "\n";
+	std::cerr << "scale: " << scale << "\n";
+
+	std::cerr << "p1 (scaled predictions): " << p1 << "\n";
+	std::cerr << "r1 (scaled true runtimes): " << r1 << "\n";
+
+	auto reciprocal_p1 = 1.0f / torch::clamp_min(p1, 1e-10f);
+	auto reciprocal_r1 = 1.0f / r1;
+	std::cerr << "1/p1: " << reciprocal_p1 << "\n";
+	std::cerr << "1/r1: " << reciprocal_r1 << "\n";
+	std::cerr << "1/p1 has inf: " << torch::isinf(reciprocal_p1).any().item<bool>() << "\n";
+	std::cerr << "1/r1 has inf: " << torch::isinf(reciprocal_r1).any().item<bool>() << "\n";
+
+	std::cerr << "delta: " << delta << "\n";
+	std::cerr << "delta has NaN: " << torch::isnan(delta).any().item<bool>() << "\n";
+	std::cerr << "delta has inf: " << torch::isinf(delta).any().item<bool>() << "\n";
+	std::cerr << "delta min: " << delta.min().item<float>() << "\n";
+	std::cerr << "delta max: " << delta.max().item<float>() << "\n";
+
+	std::cerr << "loss: " << loss.item<float>() << "\n";
+	std::cerr << "loss is NaN: " << std::isnan(loss.item<float>()) << "\n";
+	std::cerr << "loss is inf: " << std::isinf(loss.item<float>()) << "\n";
+	std::cerr << "=========================\n";
+
     
     // Backward pass
     optimizer->zero_grad();
@@ -527,6 +711,11 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     
     // Update weights in LibTorchWeights structure
     network->save_weights(weights);
+	if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
+		std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 contains NaN values!\n";
+	}else{
+		std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 does NOT contain NaN values!\n";
+	}
     
     // Copy predictions back
     auto predictions_cpu = predictions.detach().cpu();
@@ -542,12 +731,51 @@ void LibTorchCostModel::save_weights() {
     internal_assert(!weights_out_path.empty())
         << "Unable to save weights: no output path specified\n";
     
+	// --------- CHANGED THIS -------------------
     // Save weights from network to LibTorchWeights
-    network->save_weights(weights);
+    //network->save_weights(weights);
     
-    // Save to file using optimized LibTorchWeights
-    internal_assert(weights.save_to_file(weights_out_path))
-        << "Unable to save weights to: " << weights_out_path << "\n";
+    //// Save to file using optimized LibTorchWeights
+    //internal_assert(weights.save_to_file(weights_out_path))
+        //<< "Unable to save weights to: " << weights_out_path << "\n";
+	// -------------------------------------------
+	// --------- TO THIS -------------------------
+    //internal_assert(network->save_to_file(weights_out_path))
+        //<< "Unable to save weights to: " << weights_out_path << "\n";
+
+	// pasting code from CustomModelNetwork->save_weights here. Basically, we can't just create 
+	// a new weights object because the weights object within LibTorchModel must persist during 
+	// training (duh). Since that weights object is here, it doesn't make sense sending it to
+	// network->save_to_file(...) and doing all this over there.
+    try {
+        network->save_weights(weights);
+        
+        // Save to file
+        bool saved = false;
+        if (weights_out_path.size() >= 3 && weights_out_path.substr(weights_out_path.size() - 3) == ".pt") {
+            saved = weights.save_to_libtorch_file(weights_out_path);
+        } else {
+            saved = weights.save_to_file(weights_out_path);
+        }
+        
+        if (saved) {
+            aslog(1) << "CustomModelNetwork: Saved weights to " << weights_out_path << "\n";
+			std::cerr << "CustomModelNetwork: Saved weights to " << weights_out_path << "\n";
+        } else {
+            aslog(0) << "CustomModelNetwork: Failed to save weights to " << weights_out_path << "\n";
+        }
+    } catch (const std::exception &e) {
+        aslog(0) << "CustomModelNetwork: Exception saving to " << weights_out_path << ": " << e.what() << "\n";
+    } catch (...) {
+        aslog(0) << "CustomModelNetwork: Unknown error saving to " << weights_out_path << "\n";
+    }
+	// -------------------------------------------
+	// save_weights stores model weights into our LibTorchWeights object
+	// weights.save_to_file saves these weights to a file BY FIRST CONVERTING
+	// TO HALIDE WEIGHTS, which is not what we want.
+	// directly calling network->save_to_file calls save_weights first internally,
+	// but then calls save_to_libtorch_file if our weights were from a .pt file. 
+	// This function stores weights in the libtorch format as needed.
 }
 
 std::unique_ptr<LibTorchCostModel> make_libtorch_cost_model(const std::string &weights_in_path,

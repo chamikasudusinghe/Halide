@@ -4,7 +4,7 @@
 /** \file
  * Support for linking LLVM modules that comprise the runtime.
  */
-
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>

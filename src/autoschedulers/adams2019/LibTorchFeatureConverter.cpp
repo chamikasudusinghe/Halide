@@ -79,45 +79,51 @@ torch::Tensor LibTorchFeatureConverter::convert_schedule_features(
             const auto &feat = schedule_feats.get(&*it);
             
             int feat_idx = 0;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.num_realizations;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.num_productions;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.points_computed_per_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.points_computed_per_production;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.points_computed_total;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.points_computed_minimum;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_loop_extent;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_pure_loop_extent;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unrolled_loop_extent;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.inner_parallelism;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.outer_parallelism;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.bytes_at_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.bytes_at_production;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.bytes_at_root;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_production;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_root;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.inlined_calls;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.allocation_bytes_read_per_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.working_set;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.vector_size;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.native_vector_size;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.num_vectors;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.num_scalars;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.scalar_loads_per_vector;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.vector_loads_per_vector;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.scalar_loads_per_scalar;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.bytes_at_task;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_task;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_vector;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_vector;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_task;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_task;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.working_set_at_task;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.working_set_at_production;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.working_set_at_realization;
-        sf_tensor[feat_idx++][stage_idx] = (float)feat.working_set_at_root;
+
+			// doing (sf_tensor[][] = ...) is problematic because "the cost of dynamic dispatch
+			// is very high". We use a tensor accessor instead --- triggers type and shape checks
+			// only once, and not for every access.
+			//
+			auto sf_acc = sf_tensor.accessor<float, 2>();
+			sf_acc[feat_idx++][stage_idx] = (float)feat.num_realizations;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.num_productions;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.points_computed_per_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.points_computed_per_production;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.points_computed_total;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.points_computed_minimum;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_loop_extent;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_pure_loop_extent;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unrolled_loop_extent;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.inner_parallelism;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.outer_parallelism;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.bytes_at_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.bytes_at_production;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.bytes_at_root;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_production;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_root;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.inlined_calls;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.allocation_bytes_read_per_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.working_set;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.vector_size;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.native_vector_size;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.num_vectors;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.num_scalars;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.scalar_loads_per_vector;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.vector_loads_per_vector;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.scalar_loads_per_scalar;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.bytes_at_task;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.innermost_bytes_at_task;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_vector;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_vector;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_bytes_read_per_task;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.unique_lines_read_per_task;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.working_set_at_task;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.working_set_at_production;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.working_set_at_realization;
+			sf_acc[feat_idx++][stage_idx] = (float)feat.working_set_at_root;
         
             stage_idx++;
         }

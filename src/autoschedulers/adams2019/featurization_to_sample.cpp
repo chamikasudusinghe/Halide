@@ -31,6 +31,9 @@ int main(int argc, char **argv) {
     int32_t pid = atoi(argv[3]);
     int32_t sid = atoi(argv[4]);
 
+	std::cerr<<"featurization_to_sample: pid is "<<pid<<"\n";
+	std::cerr<<"featurization_to_sample: sid is "<<sid<<"\n";
+
     dst.write((const char *)&r, 4);
     dst.write((const char *)&pid, 4);
     dst.write((const char *)&sid, 4);

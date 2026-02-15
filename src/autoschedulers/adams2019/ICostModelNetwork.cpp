@@ -7,6 +7,8 @@
 #include <fstream>
 #include <ctime>
 #include <torch/torch.h>
+#include "Timer.h"
+#include "CustomNetwork0.h"
 
 using Halide::Internal::aslog;
 
@@ -15,20 +17,20 @@ namespace Halide {
 // CustomModelNetwork implementation
 CustomModelNetwork::CustomModelNetwork(const std::string &architecture_type, 
                                        bool use_random_weights)
-    : architecture_type_(architecture_type), num_output_channels_(conv1_channels) {
+    : architecture_type_(architecture_type), num_output_channels_(conv1_channels), use_random_weights_(use_random_weights) {
     
     // For now, only support Adams2019 architecture (same as original)
     // This makes it easy to test the flexible system
     // Future: can add other architectures here
-    if (architecture_type == "adams2019" || architecture_type == "default" || architecture_type.empty()) {
-        initialize_adams2019_architecture(use_random_weights);
-        aslog(1) << "CustomModelNetwork: Created with Adams2019 architecture"
-                 << (use_random_weights ? " (random weights)" : "") << "\n";
-    } else {
-        aslog(0) << "CustomModelNetwork: Unknown architecture type: " << architecture_type 
-                 << ", using Adams2019 as fallback\n";
-        initialize_adams2019_architecture(use_random_weights);
-    }
+    //if (architecture_type == "adams2019" || architecture_type == "default" || architecture_type.empty()) {
+        //initialize_adams2019_architecture(use_random_weights);
+        //aslog(1) << "CustomModelNetwork: Created with Adams2019 architecture"
+                 //<< (use_random_weights ? " (random weights)" : "") << "\n";
+    //} else {
+        //aslog(0) << "CustomModelNetwork: Unknown architecture type: " << architecture_type 
+                 //<< ", using Adams2019 as fallback\n";
+        //initialize_adams2019_architecture(use_random_weights);
+    //}
 }
 
 void CustomModelNetwork::initialize_adams2019_architecture(bool use_random_weights) {
@@ -237,11 +239,26 @@ bool CustomModelNetwork::save_to_file(const std::string &path) const {
     }
 }
 
+std::unique_ptr<CustomModelNetwork> CustomModelNetwork::createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights) {
+
+	if(architecture_type == "adams2019" | architecture_type == "Adams2019")	{
+		aslog(0) << "createCustomNetworkFromType: Creating new Adams2019 network"<< "\n";
+		return std::make_unique<Adams2019Network>(architecture_type, use_random_weights);
+	} else if (architecture_type == "custom0") {
+		aslog(0) << "createCustomNetworkFromType: Creating new CustomNetwork0 network"<< "\n";
+		return std::make_unique<CustomNetwork0>(architecture_type, use_random_weights);
+	}
+	// default to Adams2019
+	aslog(0) << "Invalid Architecture input to createCustomNetworkFromType. Defaulting to Adams2019" << "\n";
+	return std::make_unique<Adams2019Network>(architecture_type, use_random_weights);
+}
+
 // Factory function
 std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     const std::string &model_type_or_path,
     const std::string &weights_path) {
     
+	Internal::Autoscheduler::ScopedTimer model_creation_timer("timing model creation time"); 
     // If HL_COST_MODEL_TYPE is a path, treat it as "custom network + load weights/model from that path".
     const bool ends_with_pt = (model_type_or_path.size() >= 3 &&
                               model_type_or_path.substr(model_type_or_path.size() - 3) == ".pt");
@@ -260,8 +277,27 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     
     // Check for "custom" model type (uses Adams2019 architecture with random weights)
     if (model_type_or_path == "custom" || model_type_or_path == "CustomModelNetwork") {
-        auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
-        aslog(1) << "Created CustomModelNetwork with Adams2019 architecture (random weights)\n";
+        //auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
+		aslog(0) << "Created CustomModelNetwork with custom0 architecture (random weights)\n";
+		std::cerr<<"Created CustomModelNetwork with custom0 architecture (random weights)\n";
+		auto custom_model = CustomModelNetwork::createCustomNetworkFromType("custom0", true);
+
+		// load weights from HL_WEIGHTS_DIR if it is a .pt file
+		if(weights_path.size() >= 3 && weights_path.substr(weights_path.size() - 3) == ".pt") 
+		{
+			if(custom_model->load_from_file(weights_path)) {
+				aslog(1) << "CustomModelNetwork: loaded weights from "<< weights_path << "\n";
+				std::cerr<<"CustomModelNetwork: loaded weights from "<< weights_path << "\n";
+			} else{
+				aslog(1) << "CustomModelNetwork: failed to load weights from "<< weights_path
+							<< "; continuing with random weights\n";
+				std::cerr<<"CustomModelNetwork: failed to load weights from "<< weights_path
+							<< "; continuing with random weights\n";
+			}
+		}else{
+			std::cerr<<"CustomModelNetwork: weights are not .pt type: "<<weights_path<<"\n";
+
+		}
         return std::move(custom_model);
     }
     

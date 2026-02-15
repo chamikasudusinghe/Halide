@@ -40,6 +40,9 @@ public:
     torch::Tensor trunk_filter_stage2;  // (conv1_channels, head2_channels, 1) - for head2
     torch::Tensor trunk_bias;  // (conv1_channels,) - only for stage1
 
+	torch::Tensor trunk_fc_0;
+	torch::Tensor trunk_fc_0_bias;
+
     LibTorchWeights();
     ~LibTorchWeights() = default;
 
@@ -67,12 +70,15 @@ public:
     // Get weights in original Halide format (for saving)
     void to_halide_weights(Internal::Weights &halide_weights) const;
 
+    template<typename T>
+    static torch::Tensor buffer_to_tensor_public(const Halide::Runtime::Buffer<T> &buf);
+
 private:
     bool loaded = false;
-
     // Helper: Convert Halide buffer to torch tensor
     template<typename T>
     torch::Tensor buffer_to_tensor(const Halide::Runtime::Buffer<T> &buf);
+
 };
 
 }  // namespace Halide

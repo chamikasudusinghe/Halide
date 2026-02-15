@@ -87,6 +87,16 @@ void DefaultCostModel::set_pipeline_features(const Runtime::Buffer<float> &pipel
     num_cores = n;
 }
 
+
+/* 
+ * this enqueue function first calls another enqueue function that returns to us the part of schedule_queue which needs filling.
+ * It then fills that part by iterating over the FunctionDAG. When called 1024 times, the entire schedule_queue fills up, and 
+ * evaluate_costs is triggered, which passes schedule_queue and pipeline_queue directly to the cost model as inputs, and stores
+ * outputs within the provided the "costs" buffer. The costs_ptrs pointer is provided by the State containing this schedule as a location
+ * where the cost must be stored after evaluation. Hence, evaluate_costs, after storing outputs in the "costs" buffer, copies all of it
+ * into the corresponding pointers in costs_ptrs. 
+ * */
+
 void DefaultCostModel::enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
                                const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
                                double *cost_ptr) {

@@ -18,6 +18,12 @@ class LibTorchWeights;
  */
 class ICostModelNetwork {
 public:
+
+	// BHsketch S ---------
+	//std::chrono::duration<float> collectiveInferenceTime{0.0f};	
+	std::chrono::duration<float, std::milli> collectiveInferenceDuration = std::chrono::duration<float, std::milli>::zero();
+	// BHsketch E ---------
+	//
     virtual ~ICostModelNetwork() = default;
     
     /**
@@ -118,18 +124,12 @@ public:
      * @param architecture_type: Type of architecture to use (currently only "adams2019" supported)
      * @param use_random_weights: If true, initialize with random weights (default: true)
      */
+
+	// ############## Functionality common to all models #####################
+	//
     CustomModelNetwork(const std::string &architecture_type = "adams2019", 
                        bool use_random_weights = true);
     
-    torch::Tensor forward(const torch::Tensor &pipeline_features,
-                         const torch::Tensor &schedule_features,
-                         int num_stages,
-                         int batch_size) override;
-    
-    void load_weights(const LibTorchWeights &w) override;
-    void save_weights(LibTorchWeights &w) const override;
-    
-    int get_num_output_channels() const override { return conv1_channels; }
     void eval() override { this->torch::nn::Module::eval(); }
     void train() override { this->torch::nn::Module::train(); }
     std::vector<torch::Tensor> parameters() override {
@@ -139,15 +139,33 @@ public:
         }
         return params;
     }
-    
-    bool load_from_file(const std::string &path) override;
-    bool save_to_file(const std::string &path) const override;
 
-private:
-    void initialize_adams2019_architecture(bool use_random_weights);
-    void randomize_weights();
+	// CustomModelNetwork acts as the interface through which we can call createCustomNetworkFromType,
+	// thus creating an instance of one of the subtypes of this "interface".
+	static std::unique_ptr<CustomModelNetwork> createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights);
+
+	// ############ Virtual methods specific to the custom model #############
+	//
+    virtual torch::Tensor forward(const torch::Tensor &pipeline_features,
+                         const torch::Tensor &schedule_features,
+                         int num_stages,
+                         int batch_size) override;
+    
+    virtual void load_weights(const LibTorchWeights &w) override;
+    virtual void save_weights(LibTorchWeights &w) const override;
+    
+    virtual int get_num_output_channels() const override { return conv1_channels; }
+    
+    virtual bool load_from_file(const std::string &path) override;
+    virtual bool save_to_file(const std::string &path) const override;
+
+
+protected:
+    virtual void initialize_adams2019_architecture(bool use_random_weights);
+    virtual void randomize_weights();
     
     std::string architecture_type_;
+	bool use_random_weights_;
     int num_output_channels_;
     
     // Adams2019 architecture (same as Adams2019Network for now)

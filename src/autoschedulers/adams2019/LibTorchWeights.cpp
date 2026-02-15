@@ -21,6 +21,56 @@ LibTorchWeights::LibTorchWeights() {
     trunk_filter_stage1 = torch::zeros({conv1_channels, head1_channels, 1}, torch::kFloat32);
     trunk_filter_stage2 = torch::zeros({conv1_channels, head2_channels, 1}, torch::kFloat32);
     trunk_bias = torch::zeros({conv1_channels}, torch::kFloat32);
+
+	// BHsketch: adding new filters for applying a fully connected layer to each 
+	// channel in concat(head1_out, head2_out)
+	//trunk_fc_0 = torch::zeros({conv1_channels, 2*conv1_channels, 1}, torch::kFloat32);
+	//trunk_fc_0_bias = torch::zeros({conv1_channels}, torch::kFloat32);
+	auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+	trunk_fc_0 = torch::normal(0.0, 0.1, {conv1_channels, 2 * conv1_channels, 1}, /*generator=*/c10::nullopt, opts);
+	trunk_fc_0_bias = torch::normal(0.0, 0.1, {conv1_channels}, /*generator=*/c10::nullopt, opts);
+}
+
+template<typename T>
+torch::Tensor LibTorchWeights::buffer_to_tensor_public(const Halide::Runtime::Buffer<T> &buf) {
+    std::vector<int64_t> shape;
+    for (int i = 0; i < buf.dimensions(); i++) {
+        shape.push_back(buf.dim(i).extent());
+    }
+    
+    // Create tensor and manually copy data to ensure correct layout
+    // Halide buffers may have non-contiguous strides, so we can't use from_blob directly
+    auto tensor = torch::zeros(shape, torch::kFloat32);
+    auto tensor_data = tensor.data_ptr<float>();
+    
+    // Copy data respecting Halide buffer's dimension order
+    // For a 3D buffer (c, w, h), iterate in that order
+    if (buf.dimensions() == 3) {
+        for (int i = 0; i < shape[0]; i++) {
+            for (int j = 0; j < shape[1]; j++) {
+                for (int k = 0; k < shape[2]; k++) {
+                    int64_t tensor_idx = i * shape[1] * shape[2] + j * shape[2] + k;
+                    tensor_data[tensor_idx] = buf(i, j, k);
+                }
+            }
+        }
+    } else if (buf.dimensions() == 2) {
+        for (int i = 0; i < shape[0]; i++) {
+            for (int j = 0; j < shape[1]; j++) {
+                int64_t tensor_idx = i * shape[1] + j;
+                tensor_data[tensor_idx] = buf(i, j);
+            }
+        }
+    } else if (buf.dimensions() == 1) {
+        for (int i = 0; i < shape[0]; i++) {
+            tensor_data[i] = buf(i);
+        }
+    } else {
+        // Fallback: use from_blob for other dimensions
+        tensor = torch::from_blob((void*)buf.data(), shape, torch::kFloat32).clone();
+    }
+    
+    return tensor;
 }
 
 template<typename T>
@@ -213,6 +263,7 @@ void LibTorchWeights::to_halide_weights(Internal::Weights &halide_weights) const
 
 bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
     try {
+		std::cerr<<"called load_from_libtorch_file\n";
         // Check if file exists
         std::ifstream file(path);
         if (!file.good()) {
@@ -232,6 +283,36 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
         archive.read("trunk_filter_stage1", trunk_filter_stage1);
         archive.read("trunk_filter_stage2", trunk_filter_stage2);
         archive.read("trunk_bias", trunk_bias);
+
+		if (torch::isnan(head1_filter).any().item<bool>()) {
+			std::cout << "head1_filter contains NaN values!" << std::endl;
+		}
+		if (torch::isnan(head2_filter).any().item<bool>()) {
+			std::cout << "head2_filter contains NaN values!" << std::endl;
+		}
+		if (torch::isnan(trunk_filter_stage1).any().item<bool>()) {
+			std::cout << "trunk_filter_stage1 contains NaN values!" << std::endl;
+		}
+		if (torch::isnan(trunk_filter_stage2).any().item<bool>()) {
+			std::cout << "trunk_filter_stage2 contains NaN values!" << std::endl;
+		}
+
+		try {
+			archive.read("trunk_fc_0", trunk_fc_0);
+		} catch (const c10::Error &e) {
+			std::cerr << "Warning: trunk_fc_0 not found in archive. Using default (zero) initialization.\n";
+			auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+			trunk_fc_0 = torch::normal(0.0, 0.1, {conv1_channels, 2 * conv1_channels, 1}, /*generator=*/c10::nullopt, opts);
+		}
+
+		try {
+			archive.read("trunk_fc_0_bias", trunk_fc_0_bias);
+		} catch (const c10::Error &e) {
+			std::cerr << "Warning: trunk_fc_0_bias not found in archive. Using default (zero) initialization.\n";
+			auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+			trunk_fc_0_bias = torch::normal(0.0, 0.1, {conv1_channels}, /*generator=*/c10::nullopt, opts);
+		}
+
         
         // Verify tensors were loaded correctly
         if (head1_filter.numel() == 0 || head2_filter.numel() == 0) {
@@ -240,7 +321,7 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
         }
         
         loaded = true;
-        aslog(1) << "LibTorchWeights: Successfully loaded weights from " << path << "\n";
+        aslog(0) << "LibTorchWeights: Successfully loaded weights from " << path << "\n";
         return true;
     } catch (const std::exception &e) {
         aslog(0) << "LibTorchWeights: Standard exception loading weights from " << path << ": " << e.what() << "\n";
@@ -269,6 +350,8 @@ bool LibTorchWeights::save_to_libtorch_file(const std::string &path) const {
         archive.write("trunk_filter_stage2", trunk_filter_stage2);
         archive.write("trunk_bias", trunk_bias);
         archive.write("format_version", torch::tensor(1)); // Version 1: LibTorch format
+		archive.write("trunk_fc_0", trunk_fc_0);
+		archive.write("trunk_fc_0_bias", trunk_fc_0_bias);
         
         archive.save_to(path);
         return true;
@@ -280,3 +363,14 @@ bool LibTorchWeights::save_to_libtorch_file(const std::string &path) const {
 
 }  // namespace Halide
 
+
+namespace Halide {
+
+// Explicit template instantiations for buffer_to_tensor_public
+template torch::Tensor LibTorchWeights::buffer_to_tensor_public<float>(
+    const Halide::Runtime::Buffer<float> &buf);
+
+template torch::Tensor LibTorchWeights::buffer_to_tensor_public<const float>(
+    const Halide::Runtime::Buffer<const float> &buf);
+
+}  // namespace Halide
