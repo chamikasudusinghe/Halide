@@ -628,7 +628,6 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
 	// instead of merely concatenating to get (1, 39xN, num_stages)
     //auto schedule_features_batch = torch::cat(schedule_feat_queue, 0);
 	
-	std::cerr<<"in backprop: weights.loaded is "<<weights.is_loaded() <<"\n";
     std::vector<torch::Tensor> transposed;
     for (const auto &t : schedule_feat_queue) {
         transposed.push_back(t.transpose(0, 1).contiguous()); // (head2_w, num_stages)
@@ -642,12 +641,14 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     
     // Forward pass
     auto coefficients = network->forward(pipeline_features, schedule_features_batch, num_stages, cursor);
-	if (torch::isnan(coefficients).any().item<bool>()) {
-		std::cerr << "LibTorchCostModel::backprop, result of forward contains NaN values!\n";
-	}else{
-		std::cerr << "LibTorchCostModel::backprop, result of forward does NOT contain NaN values!\n";
-	}
-	std::cerr<<"LibTorchCostModel::backprop: before compute_costs_from_coeff, num cores is "<<num_cores<<"\n";
+
+	//if (torch::isnan(coefficients).any().item<bool>()) {
+		//std::cerr << "LibTorchCostModel::backprop, result of forward contains NaN values!\n";
+	//}else{
+		//std::cerr << "LibTorchCostModel::backprop, result of forward does NOT contain NaN values!\n";
+	//}
+	//std::cerr<<"LibTorchCostModel::backprop: before compute_costs_from_coeff, num cores is "<<num_cores<<"\n";
+
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
     
     // Convert true runtimes to tensor
@@ -665,42 +666,42 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     // Regularization term (penalize negative pre-ReLU values)
     // This is simplified - full implementation would need access to pre-ReLU activations
     auto loss = torch::mean(delta);
-	std::cerr<<"LibTorchCostModel::backprop, loss: "<<loss<<"\n";
+	//std::cerr<<"LibTorchCostModel::backprop, loss: "<<loss<<"\n";
 
-	std::cerr << "=== PRE-BACKWARD DEBUG ===\n";
-	std::cerr << "predictions: " << predictions << "\n";
-	std::cerr << "predictions min: " << predictions.min().item<float>() << "\n";
-	std::cerr << "predictions max: " << predictions.max().item<float>() << "\n";
-	std::cerr << "predictions has NaN: " << torch::isnan(predictions).any().item<bool>() << "\n";
-	std::cerr << "predictions has inf: " << torch::isinf(predictions).any().item<bool>() << "\n";
-	std::cerr << "predictions has negatives: " << (predictions < 0).any().item<bool>() << "\n";
-	std::cerr << "predictions has zeros: " << (predictions == 0).any().item<bool>() << "\n";
+	//std::cerr << "=== PRE-BACKWARD DEBUG ===\n";
+	//std::cerr << "predictions: " << predictions << "\n";
+	//std::cerr << "predictions min: " << predictions.min().item<float>() << "\n";
+	//std::cerr << "predictions max: " << predictions.max().item<float>() << "\n";
+	//std::cerr << "predictions has NaN: " << torch::isnan(predictions).any().item<bool>() << "\n";
+	//std::cerr << "predictions has inf: " << torch::isinf(predictions).any().item<bool>() << "\n";
+	//std::cerr << "predictions has negatives: " << (predictions < 0).any().item<bool>() << "\n";
+	//std::cerr << "predictions has zeros: " << (predictions == 0).any().item<bool>() << "\n";
 
-	std::cerr << "true_runtimes: " << true_runtimes_tensor << "\n";
-	std::cerr << "fastest_idx: " << fastest_idx << "\n";
-	std::cerr << "fastest_runtime: " << true_runtimes_tensor[fastest_idx].item<float>() << "\n";
-	std::cerr << "scale: " << scale << "\n";
+	//std::cerr << "true_runtimes: " << true_runtimes_tensor << "\n";
+	//std::cerr << "fastest_idx: " << fastest_idx << "\n";
+	//std::cerr << "fastest_runtime: " << true_runtimes_tensor[fastest_idx].item<float>() << "\n";
+	//std::cerr << "scale: " << scale << "\n";
 
-	std::cerr << "p1 (scaled predictions): " << p1 << "\n";
-	std::cerr << "r1 (scaled true runtimes): " << r1 << "\n";
+	//std::cerr << "p1 (scaled predictions): " << p1 << "\n";
+	//std::cerr << "r1 (scaled true runtimes): " << r1 << "\n";
 
-	auto reciprocal_p1 = 1.0f / torch::clamp_min(p1, 1e-10f);
-	auto reciprocal_r1 = 1.0f / r1;
-	std::cerr << "1/p1: " << reciprocal_p1 << "\n";
-	std::cerr << "1/r1: " << reciprocal_r1 << "\n";
-	std::cerr << "1/p1 has inf: " << torch::isinf(reciprocal_p1).any().item<bool>() << "\n";
-	std::cerr << "1/r1 has inf: " << torch::isinf(reciprocal_r1).any().item<bool>() << "\n";
+	//auto reciprocal_p1 = 1.0f / torch::clamp_min(p1, 1e-10f);
+	//auto reciprocal_r1 = 1.0f / r1;
+	//std::cerr << "1/p1: " << reciprocal_p1 << "\n";
+	//std::cerr << "1/r1: " << reciprocal_r1 << "\n";
+	//std::cerr << "1/p1 has inf: " << torch::isinf(reciprocal_p1).any().item<bool>() << "\n";
+	//std::cerr << "1/r1 has inf: " << torch::isinf(reciprocal_r1).any().item<bool>() << "\n";
 
-	std::cerr << "delta: " << delta << "\n";
-	std::cerr << "delta has NaN: " << torch::isnan(delta).any().item<bool>() << "\n";
-	std::cerr << "delta has inf: " << torch::isinf(delta).any().item<bool>() << "\n";
-	std::cerr << "delta min: " << delta.min().item<float>() << "\n";
-	std::cerr << "delta max: " << delta.max().item<float>() << "\n";
+	//std::cerr << "delta: " << delta << "\n";
+	//std::cerr << "delta has NaN: " << torch::isnan(delta).any().item<bool>() << "\n";
+	//std::cerr << "delta has inf: " << torch::isinf(delta).any().item<bool>() << "\n";
+	//std::cerr << "delta min: " << delta.min().item<float>() << "\n";
+	//std::cerr << "delta max: " << delta.max().item<float>() << "\n";
 
-	std::cerr << "loss: " << loss.item<float>() << "\n";
-	std::cerr << "loss is NaN: " << std::isnan(loss.item<float>()) << "\n";
-	std::cerr << "loss is inf: " << std::isinf(loss.item<float>()) << "\n";
-	std::cerr << "=========================\n";
+	//std::cerr << "loss: " << loss.item<float>() << "\n";
+	//std::cerr << "loss is NaN: " << std::isnan(loss.item<float>()) << "\n";
+	//std::cerr << "loss is inf: " << std::isinf(loss.item<float>()) << "\n";
+	//std::cerr << "=========================\n";
 
     
     // Backward pass
@@ -711,11 +712,11 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     
     // Update weights in LibTorchWeights structure
     network->save_weights(weights);
-	if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
-		std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 contains NaN values!\n";
-	}else{
-		std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 does NOT contain NaN values!\n";
-	}
+	//if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
+		//std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 contains NaN values!\n";
+	//}else{
+		//std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 does NOT contain NaN values!\n";
+	//}
     
     // Copy predictions back
     auto predictions_cpu = predictions.detach().cpu();

@@ -403,7 +403,7 @@ int main(int argc, char **argv) {
     if (samples.size() > 16) {
 		std::cerr<<"sample size is >16 \n";
         for (const auto &p : samples) {
-			std::cerr<<"inside p:samples loop iteration\n";
+			//std::cerr<<"inside p:samples loop iteration\n";
             unique_schedules += p.second.schedules.size();
             // Whether or not a pipeline is part of the validation set
             // can't be a call to rand. It must be a fixed property of a
@@ -413,10 +413,10 @@ int main(int argc, char **argv) {
             // schedule will do as a hash.
             if ((p.second.pipeline_hash & 7) == 0) {
                 validation_set.insert(p);
-				std::cerr<<"inserting into validation set\n";
+				//std::cerr<<"inserting into validation set\n";
             } else {
 
-				std::cerr<<"part of training set\n";
+				//std::cerr<<"part of training set\n";
 			}
         }
 
@@ -522,7 +522,7 @@ int main(int argc, char **argv) {
 								buf.copy_from(sched.schedule_features);
 							} else if(is_libtorch) {
 								//torch::Tensor schedule_features = LibTorchWeights::buffer_to_tensor(sched.schedule_features);
-								std::cerr<<"		is_libtorch is true\n";
+								//std::cerr<<"		is_libtorch is true\n";
 								std::vector<torch::Tensor> &schedule_queue_ref = libtorch_cast->enqueue(p.second.num_stages, &sched.prediction[model]);
 								runtimes(j) = sched.runtimes[0];
 								if(runtimes(j) < runtimes(fastest_idx)) {
@@ -697,13 +697,13 @@ int main(int argc, char **argv) {
 	metrics_log.close();
     
     // Generate plots
-	std::cout << "\nGenerating training plots...\n";
-	int plot_result = system("python3 plot_training_metrics.py");
-	if (plot_result == 0) {
-		std::cout << "Plots saved to training_loss.png and correct_ordering_rate.png\n";
-	} else {
-		std::cout << "Warning: Could not generate plots. Make sure plot_training_metrics.py exists and matplotlib is installed.\n";
-	}
+	//std::cout << "\nGenerating training plots...\n";
+	//int plot_result = system("python3 plot_training_metrics.py");
+	//if (plot_result == 0) {
+		//std::cout << "Plots saved to training_loss.png and correct_ordering_rate.png\n";
+	//} else {
+		//std::cout << "Warning: Could not generate plots. Make sure plot_training_metrics.py exists and matplotlib is installed.\n";
+	//}
 
 
     // tpp.save_weights();
