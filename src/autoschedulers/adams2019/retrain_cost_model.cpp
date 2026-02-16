@@ -385,6 +385,12 @@ int main(int argc, char **argv) {
     std::cout.setf(std::ios::fixed, std::ios::floatfield);
     std::cout.precision(4);
 
+	// Open CSV file for logging metrics
+    std::ofstream metrics_log("training_metrics.csv");
+    metrics_log << "epoch,learning_rate,train_loss,train_correct_rate,val_correct_rate\n";
+    metrics_log.setf(std::ios::fixed, std::ios::floatfield);
+    metrics_log.precision(6);
+
     auto seed = time(nullptr);
     std::mt19937 rng((uint32_t)seed);
 
@@ -436,6 +442,7 @@ int main(int argc, char **argv) {
         float v_correct_ordering_rate_count[kModels] = {0};
 
         for (int e = 0; e < flags.epochs; e++) {
+			metrics_log << e << ", " << learning_rate <<", ";
             int counter = 0;
 
             float worst_miss = 0;
@@ -620,6 +627,7 @@ int main(int argc, char **argv) {
             std::cout << "Loss: ";
             for (int model = 0; model < kModels; model++) {
                 std::cout << loss_sum[model] / loss_sum_counter[model] << " ";
+				metrics_log << loss_sum[model] / loss_sum_counter[model] << ", ";
                 loss_sum[model] *= 0.9f;
                 loss_sum_counter[model] *= 0.9f;
             }
@@ -632,6 +640,7 @@ int main(int argc, char **argv) {
             for (int model = 0; model < kModels; model++) {
                 float rate = correct_ordering_rate_sum[model] / correct_ordering_rate_count[model];
                 std::cout << rate << " ";
+				metrics_log << rate << ", ";
                 correct_ordering_rate_sum[model] *= 0.9f;
                 correct_ordering_rate_count[model] *= 0.9f;
 
@@ -641,9 +650,16 @@ int main(int argc, char **argv) {
                     best_rate = rate;
                 }
                 std::cout << rate << " ";
+				metrics_log << rate << "\n";
                 v_correct_ordering_rate_sum[model] *= 0.9f;
                 v_correct_ordering_rate_count[model] *= 0.9f;
             }
+
+			// Log to CSV
+			//metrics_log << e << "," << learning_rate << "," 
+				//<< train_loss_val << "," << train_rate_val << "," 
+				//<< val_rate_val << "\n";
+			metrics_log.flush();
 
             if (kModels > 1) {
                 std::cout << "\n";
@@ -677,6 +693,18 @@ int main(int argc, char **argv) {
             }
         }
     }
+	
+	metrics_log.close();
+    
+    // Generate plots
+	std::cout << "\nGenerating training plots...\n";
+	int plot_result = system("python3 plot_training_metrics.py");
+	if (plot_result == 0) {
+		std::cout << "Plots saved to training_loss.png and correct_ordering_rate.png\n";
+	} else {
+		std::cout << "Warning: Could not generate plots. Make sure plot_training_metrics.py exists and matplotlib is installed.\n";
+	}
+
 
     // tpp.save_weights();
 
