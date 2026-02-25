@@ -57,9 +57,12 @@ public:
 
     // Load weights from LibTorch format (direct tensor loading, faster)
     bool load_from_libtorch_file(const std::string &path);
+	// same, but for generic set of weights (named parameters) within a map
+    bool load_from_libtorch_file_generic(const std::string &path);
 
     // Save weights to LibTorch format (direct tensor saving, faster)
     bool save_to_libtorch_file(const std::string &path) const;
+    bool save_to_libtorch_file_generic(const std::string &path) const;
 
     // Randomize weights (for testing)
     void randomize(uint32_t seed);
@@ -70,6 +73,31 @@ public:
     // Get weights in original Halide format (for saving)
     void to_halide_weights(Internal::Weights &halide_weights) const;
 
+	// generalized weight tensor management
+	
+    void set_weight(const std::string &name, const torch::Tensor &tensor) {
+        model_weights_[name] = tensor.clone();
+    }
+    
+    // Remove a tensor
+    void remove_weight(const std::string &name) {
+        model_weights_.erase(name);
+    }
+
+    
+    // Check if tensor exists
+    bool has_weight(const std::string &name) const {
+        return model_weights_.find(name) != model_weights_.end();
+    }
+
+    // Get a tensor by name
+    torch::Tensor get_weight(const std::string &name) const {
+        auto it = model_weights_.find(name);
+        if (it == model_weights_.end()) {
+            throw std::runtime_error("Weight not found: " + name);
+        }
+        return it->second;
+    }
     template<typename T>
     static torch::Tensor buffer_to_tensor_public(const Halide::Runtime::Buffer<T> &buf);
 
@@ -78,6 +106,9 @@ private:
     // Helper: Convert Halide buffer to torch tensor
     template<typename T>
     torch::Tensor buffer_to_tensor(const Halide::Runtime::Buffer<T> &buf);
+
+	// generalized weights list
+	std::unordered_map<std::string, torch::Tensor> model_weights_;
 
 };
 

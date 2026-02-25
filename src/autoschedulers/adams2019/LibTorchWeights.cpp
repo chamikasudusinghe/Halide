@@ -6,6 +6,7 @@
 #include <random>
 #include <fstream>
 #include <iostream>
+#include <unordered_map>
 
 using Halide::Internal::aslog;
 using Halide::Internal::Weights;
@@ -30,6 +31,7 @@ LibTorchWeights::LibTorchWeights() {
 	trunk_fc_0 = torch::normal(0.0, 0.1, {conv1_channels, 2 * conv1_channels, 1}, /*generator=*/c10::nullopt, opts);
 	trunk_fc_0_bias = torch::normal(0.0, 0.1, {conv1_channels}, /*generator=*/c10::nullopt, opts);
 }
+
 
 template<typename T>
 torch::Tensor LibTorchWeights::buffer_to_tensor_public(const Halide::Runtime::Buffer<T> &buf) {
@@ -284,18 +286,9 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
         archive.read("trunk_filter_stage2", trunk_filter_stage2);
         archive.read("trunk_bias", trunk_bias);
 
-		if (torch::isnan(head1_filter).any().item<bool>()) {
-			std::cout << "head1_filter contains NaN values!" << std::endl;
-		}
-		if (torch::isnan(head2_filter).any().item<bool>()) {
-			std::cout << "head2_filter contains NaN values!" << std::endl;
-		}
-		if (torch::isnan(trunk_filter_stage1).any().item<bool>()) {
-			std::cout << "trunk_filter_stage1 contains NaN values!" << std::endl;
-		}
-		if (torch::isnan(trunk_filter_stage2).any().item<bool>()) {
-			std::cout << "trunk_filter_stage2 contains NaN values!" << std::endl;
-		}
+		//if (torch::isnan(trunk_filter_stage2).any().item<bool>()) {
+			//std::cout << "trunk_filter_stage2 contains NaN values!" << std::endl;
+		//}
 
 		try {
 			archive.read("trunk_fc_0", trunk_fc_0);
@@ -319,6 +312,31 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
             aslog(0) << "LibTorchWeights: Loaded tensors are empty\n";
             return false;
         }
+
+		// Converting to generic list of tensors ================================
+        aslog(0) << "LibTorchWeights: loaded hardcoded weights from " << path << "; proceeding to convert them to a vector of tensors\n";
+            model_weights_.clear();
+            
+            auto head1_w_raw = head1_filter.unsqueeze(1).permute({0, 1, 3, 2});
+            model_weights_["head1_conv_raw.weight"] = head1_w_raw;
+            model_weights_["head1_conv_raw.bias"] = head1_bias;
+            model_weights_["head1_conv.weight"] = head1_filter_sigmoided;
+            model_weights_["head1_conv.bias"] = head1_bias.clone();
+            
+            model_weights_["head2_conv.weight"] = head2_filter;
+            model_weights_["head2_conv.bias"] = head2_bias;
+            
+            model_weights_["trunk_conv_stage1.weight"] = trunk_filter_stage1;
+            model_weights_["trunk_conv_stage1.bias"] = trunk_bias;
+            model_weights_["trunk_conv_stage2.weight"] = trunk_filter_stage2;
+            
+            model_weights_["trunk_fc_0.weight"] = trunk_fc_0;
+            model_weights_["trunk_fc_0.bias"] = trunk_fc_0_bias;
+            
+            loaded = true;
+            aslog(0) << "Converted " << model_weights_.size() << " tensors\n";
+            return true;
+		// ======================================================================
         
         loaded = true;
         aslog(0) << "LibTorchWeights: Successfully loaded weights from " << path << "\n";
@@ -331,6 +349,58 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
         return false;
     }
 }
+
+bool LibTorchWeights::load_from_libtorch_file_generic(const std::string &path) {
+    try {
+		std::cerr<<"called load_from_libtorch_file_generic\n";
+        // Check if file exists
+        std::ifstream file(path);
+        if (!file.good()) {
+            aslog(0) << "LibTorchWeights: File does not exist: " << path << "\n";
+            return false;
+        }
+        file.close();
+        
+        torch::serialize::InputArchive archive;
+        archive.load_from(path);
+        
+		bool all_loaded = true;
+        for (auto &weight_pair : model_weights_) {
+            const std::string &name = weight_pair.first;
+            
+            try {
+                // Create temp tensor to read into
+                torch::Tensor temp;
+                archive.read(name, temp);
+                
+                if (temp.numel() == 0) {
+                    aslog(0) << "Empty tensor: " << name << "\n";
+                    all_loaded = false;
+                    continue;
+                }
+                
+                model_weights_[name] = temp;
+                
+            } catch (const c10::Error &e) {
+                aslog(0) << "Failed to load: " << name << "\n";
+                all_loaded = false;
+            }
+        }
+        
+        if (!all_loaded) return false;
+
+        loaded = true;
+        aslog(0) << "LibTorchWeights generic read: Successfully loaded weights from " << path << "\n";
+        return true;
+    } catch (const std::exception &e) {
+        aslog(0) << "LibTorchWeights generic read: Standard exception loading weights from " << path << ": " << e.what() << "\n";
+        return false;
+    } catch (...) {
+        aslog(0) << "LibTorchWeights generic read: Unknown error loading LibTorch weights from " << path << "\n";
+        return false;
+    }
+}
+
 
 bool LibTorchWeights::save_to_libtorch_file(const std::string &path) const {
     if (!loaded) {
@@ -357,6 +427,25 @@ bool LibTorchWeights::save_to_libtorch_file(const std::string &path) const {
         return true;
     } catch (const std::exception &e) {
         aslog(0) << "Error saving LibTorch weights to " << path << ": " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool LibTorchWeights::save_to_libtorch_file_generic(const std::string &path) const {
+    if (!loaded) return false;
+    
+    try {
+        torch::serialize::OutputArchive archive;
+        
+        // Just write each tensor with its name as the key
+        for (const auto &pair : model_weights_) {
+            archive.write(pair.first, pair.second);  // ✓ Direct: "head1_conv.weight" → Tensor
+        }
+        
+        archive.save_to(path);
+        return true;
+    } catch (const std::exception &e) {
+        aslog(0) << "LibTorchWeights, generic save, Error saving LibTorch weights to " << path << ": " << e.what() << "\n";
         return false;
     }
 }

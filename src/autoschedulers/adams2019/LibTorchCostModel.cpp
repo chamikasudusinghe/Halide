@@ -35,7 +35,7 @@ static std::string get_env_variable(const std::string &name) {
     return val ? std::string(val) : std::string();
 }
 
-Adams2019Network::Adams2019Network(const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(architecture_type, use_random_weights) {
+Adams2019Network::Adams2019Network(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(input_weights_path, architecture_type, use_random_weights) {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
     // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
@@ -65,7 +65,7 @@ Adams2019Network::Adams2019Network(const std::string &architecture_type, bool us
 	}
 }
 
-Adams2019Network::Adams2019Network() {
+Adams2019Network::Adams2019Network() : CustomModelNetwork("", "adams2019", true) {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
     // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
@@ -227,7 +227,9 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     
     // Check if we have an Adams2019 network that needs weight loading
     bool is_adams2019 = (dynamic_cast<Adams2019Network*>(network.get()) != nullptr);
-    bool is_custom0 = (dynamic_cast<CustomNetwork0*>(network.get()) != nullptr);
+    bool is_custom = (dynamic_cast<CustomModelNetwork*>(network.get()) != nullptr);
+
+	weights = network->get_weights();
     
     // If weights_in_path is empty, try environment variable
     if (actual_weights_path.empty()) {
@@ -235,7 +237,7 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     }
     
     // Only load weights for Adams2019 networks (custom models are already loaded)
-    if (is_adams2019 || is_custom0) {
+    if (is_adams2019) {
         if (!actual_weights_path.empty()) {
             aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
 			std::cerr << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
@@ -245,7 +247,7 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
             bool loaded = false;
             if (actual_weights_path.size() >= 3 && 
                 actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
-                loaded = weights.load_from_libtorch_file(actual_weights_path);
+                loaded = weights->load_from_libtorch_file(actual_weights_path);
                 if (loaded) {
                     aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
 					std::cerr << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
@@ -254,7 +256,7 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
             
             // Fall back to Halide format if LibTorch format failed or not .pt file
             if (!loaded) {
-                loaded = weights.load_from_file(actual_weights_path);
+                loaded = weights->load_from_file(actual_weights_path);
                 if (loaded) {
                     aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
 					std::cerr << "LibTorchCostModel: Loaded weights from Halide format\n";
@@ -274,20 +276,20 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
         if (need_randomize) {
             auto seed = time(nullptr);
             aslog(1) << "Randomizing weights using seed = " << seed << "\n";
-            weights.randomize((uint32_t)seed);
+            weights->randomize((uint32_t)seed);
         }
         
-        // Load weights into network
-		//std::cerr<<"LibTorchCostModel: trunk_fc_0->weight: "<<weights.trunk_fc_0<<"\n";
-		//std::cerr<<"LibTorchCostModel: trunk_fc_0->bias: "<<weights.trunk_fc_0_bias<<"\n";
-		if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
+		if (torch::isnan(weights->trunk_fc_0).any().item<bool>()) {
 			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 contains NaN values!\n";
 		}else{
 			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 does NOT NaN values\n";
 		}
 
-
-        network->load_weights(weights);
+        // Load weights into network
+        //network->load_weights(weights); // this is what you would do for the earlier
+										// libtorch version but now we're using a different 
+										// function for the same
+		network->sync_weights_to_network();
         network->eval();  // Ensure still in eval mode after loading weights
     } else {
         aslog(1) << "LibTorchCostModel: Using custom model, weights already loaded\n";
@@ -711,7 +713,9 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
     timestep++;
     
     // Update weights in LibTorchWeights structure
-    network->save_weights(weights);
+    //network->save_weights(weights);
+	network->sync_weights_from_network();
+
 	//if (torch::isnan(weights.trunk_fc_0).any().item<bool>()) {
 		//std::cerr << "LibTorchCostModel::backprop, weights.trunk_fc_0 contains NaN values!\n";
 	//}else{
@@ -749,14 +753,15 @@ void LibTorchCostModel::save_weights() {
 	// training (duh). Since that weights object is here, it doesn't make sense sending it to
 	// network->save_to_file(...) and doing all this over there.
     try {
-        network->save_weights(weights);
+		//network->save_weights(weights);
+		network->sync_weights_from_network();
         
         // Save to file
         bool saved = false;
         if (weights_out_path.size() >= 3 && weights_out_path.substr(weights_out_path.size() - 3) == ".pt") {
-            saved = weights.save_to_libtorch_file(weights_out_path);
+            saved = weights->save_to_libtorch_file_generic(weights_out_path);
         } else {
-            saved = weights.save_to_file(weights_out_path);
+            saved = weights->save_to_file(weights_out_path);
         }
         
         if (saved) {
@@ -784,6 +789,7 @@ std::unique_ptr<LibTorchCostModel> make_libtorch_cost_model(const std::string &w
                                                            bool randomize_weights) {
     return std::unique_ptr<LibTorchCostModel>(new LibTorchCostModel(weights_in_path, weights_out_path, randomize_weights));
 }
+REGISTER_LIBTORCH_MODEL("Adams2019", Adams2019Network)
 
 }
 

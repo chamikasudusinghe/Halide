@@ -26,7 +26,7 @@ struct Adams2019Params;
  */
 class Adams2019Network : public CustomModelNetwork {
 public:
-    Adams2019Network(const std::string &architecture_type, bool use_random_weights);
+    Adams2019Network(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights);
     Adams2019Network();
     
     // ICostModelNetwork interface
@@ -77,7 +77,8 @@ private:
 class LibTorchCostModel : public CostModel {
 private:
     std::unique_ptr<ICostModelNetwork> network;  // Use interface for flexibility
-    LibTorchWeights weights;  // Use optimized LibTorch weights instead of Halide Weights
+    //LibTorchWeights weights;  // Use optimized LibTorch weights instead of Halide Weights
+	std::shared_ptr<LibTorchWeights> weights;
     std::vector<torch::Tensor> pipeline_feat_queue;
     std::vector<torch::Tensor> schedule_feat_queue;
     std::vector<double *> cost_ptrs;

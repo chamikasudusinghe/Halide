@@ -35,7 +35,7 @@ static std::string get_env_variable(const std::string &name) {
     return val ? std::string(val) : std::string();
 }
 
-CustomNetwork0::CustomNetwork0(const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(architecture_type, use_random_weights) {
+CustomNetwork0::CustomNetwork0(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(input_weights_path, architecture_type, use_random_weights) {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
     // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
@@ -59,103 +59,12 @@ CustomNetwork0::CustomNetwork0(const std::string &architecture_type, bool use_ra
     trunk_conv_stage2 = register_module("trunk_conv_stage2",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
 
-	//trunk_fc = register_module("trunk_fc",
-            //torch::nn::Linear(conv1_channels + conv1_channels, conv1_channels));
 	trunk_fc_0 = register_module("trunk_fc_0",
 		torch::nn::Conv1d(torch::nn::Conv1dOptions(2*conv1_channels, conv1_channels, 1).bias(true)));
 
-	if(use_random_weights_) {
-		// currently just uses the implementation in its parent class
-		randomize_weights();
-	}
-}
+	//weights = std::make_shared<LibTorchWeights>(use_random_weights);
 
-void CustomNetwork0::load_weights(const LibTorchWeights &w) {
-    // Use pre-computed weights from LibTorchWeights (already optimized)
-    // Store raw weights in head1_conv_raw (for saving)
-    auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
-    head1_w_raw = head1_w_raw.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_h, head1_w)
-    head1_conv_raw->weight.data() = head1_w_raw;
-    head1_conv_raw->bias.data() = w.head1_bias.clone();
-    
-    // Use pre-computed sigmoided weights (for forward pass - no swapping needed!)
-    head1_conv->weight.data() = w.head1_filter_sigmoided;
-    head1_conv->bias.data() = w.head1_bias.clone();
-    
-    // Load head2 weights (already in correct shape)
-    head2_conv->weight.data() = w.head2_filter;
-    head2_conv->bias.data() = w.head2_bias.clone();
-    
-    // Load trunk weights (already split into two stages)
-    trunk_conv_stage1->weight.data() = w.trunk_filter_stage1;
-    trunk_conv_stage1->bias.data() = w.trunk_bias.clone();
-    trunk_conv_stage2->weight.data() = w.trunk_filter_stage2;
-
-	trunk_fc_0->weight.data() = w.trunk_fc_0;
-	trunk_fc_0->bias.data() = w.trunk_fc_0_bias;
-	//std::cerr<<"loading weights from network->weights...\n";
-	//std::cerr<<"CustomNetwork0::load_weights: trunk_fc_0->weight: "<<trunk_fc_0->weight.data()<<"\n";
-	//std::cerr<<"CustomNetwork0::load_weights: trunk_fc_0->bias: "<<w.trunk_fc_0_bias<<"\n";
-}
-
-void CustomNetwork0::save_weights(LibTorchWeights &w) const {
-    // Save head1 weights from raw conv (not sigmoided)
-    auto head1_w = head1_conv_raw->weight.data();
-    head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
-    w.head1_filter = head1_w.squeeze(1).clone(); // (head1_channels, head1_w, head1_h)
-    w.head1_bias = head1_conv_raw->bias.data().clone();
-    
-    // Recompute sigmoided weights
-    auto head1_w_reshaped = w.head1_filter.unsqueeze(1);
-    head1_w_reshaped = head1_w_reshaped.permute({0, 1, 3, 2});
-    w.head1_filter_sigmoided = torch::sigmoid(head1_w_reshaped);
-    
-    // Save head2 weights
-    w.head2_filter = head2_conv->weight.data().clone();
-    w.head2_bias = head2_conv->bias.data().clone();
-    
-    // Save trunk weights (already split into two stages)
-    w.trunk_filter_stage1 = trunk_conv_stage1->weight.data().clone();
-    w.trunk_filter_stage2 = trunk_conv_stage2->weight.data().clone();
-    w.trunk_bias = trunk_conv_stage1->bias.data().clone();
-
-	// save final 1d conv weights
-	w.trunk_fc_0 = trunk_fc_0->weight.data().clone();
-	w.trunk_fc_0_bias = trunk_fc_0->bias.data().clone();
-}
-
-void CustomNetwork0::randomize_weights() {
-	auto seed = time(nullptr);
-    torch::manual_seed(seed);
-    
-    // Randomize head1 weights (raw and sigmoided)
-    for (auto &param : head1_conv_raw->parameters()) {
-        torch::nn::init::normal_(param, 0.0, 0.1);
-    }
-    // Copy raw weights and apply sigmoid for sigmoided version
-    head1_conv->weight.data() = torch::sigmoid(head1_conv_raw->weight.data());
-    head1_conv->bias.data() = head1_conv_raw->bias.data().clone();
-    
-    // Randomize head2 weights
-    for (auto &param : head2_conv->parameters()) {
-        torch::nn::init::normal_(param, 0.0, 0.1);
-    }
-    
-    // Randomize trunk weights
-    for (auto &param : trunk_conv_stage1->parameters()) {
-        torch::nn::init::normal_(param, 0.0, 0.1);
-    }
-
-    for (auto &param : trunk_conv_stage2->parameters()) {
-        torch::nn::init::normal_(param, 0.0, 0.1);
-    }
-
-	for (auto &param : trunk_fc_0->parameters()) {
-		torch::nn::init::normal_(param, 0.0, 0.1);
-	}
-    
-    aslog(1) << "CustomNetwork0: Initialized with random weights (seed=" << seed << ")\n";
-
+	initialize_weights(use_random_weights, input_weights_path);
 }
 
 torch::Tensor CustomNetwork0::forward(const torch::Tensor &pipeline_features,
@@ -222,5 +131,98 @@ torch::Tensor CustomNetwork0::forward(const torch::Tensor &pipeline_features,
     
     return trunk_out;
 }
+
+REGISTER_LIBTORCH_MODEL("custom0",CustomNetwork0)
+
+void CustomNetwork0::load_weights(const LibTorchWeights &w) {
+    // Use pre-computed weights from LibTorchWeights (already optimized)
+    // Store raw weights in head1_conv_raw (for saving)
+    auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
+    head1_w_raw = head1_w_raw.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_h, head1_w)
+    head1_conv_raw->weight.data() = head1_w_raw;
+    head1_conv_raw->bias.data() = w.head1_bias.clone();
+    
+    // Use pre-computed sigmoided weights (for forward pass - no swapping needed!)
+    head1_conv->weight.data() = w.head1_filter_sigmoided;
+    head1_conv->bias.data() = w.head1_bias.clone();
+    
+    // Load head2 weights (already in correct shape)
+    head2_conv->weight.data() = w.head2_filter;
+    head2_conv->bias.data() = w.head2_bias.clone();
+    
+    // Load trunk weights (already split into two stages)
+    trunk_conv_stage1->weight.data() = w.trunk_filter_stage1;
+    trunk_conv_stage1->bias.data() = w.trunk_bias.clone();
+    trunk_conv_stage2->weight.data() = w.trunk_filter_stage2;
+
+	trunk_fc_0->weight.data() = w.trunk_fc_0;
+	trunk_fc_0->bias.data() = w.trunk_fc_0_bias;
+	//std::cerr<<"loading weights from network->weights...\n";
+	//std::cerr<<"CustomNetwork0::load_weights: trunk_fc_0->weight: "<<trunk_fc_0->weight.data()<<"\n";
+	//std::cerr<<"CustomNetwork0::load_weights: trunk_fc_0->bias: "<<w.trunk_fc_0_bias<<"\n";
+}
+
+void CustomNetwork0::save_weights(LibTorchWeights &w) const {
+	sync_weights_from_network();
+    // Save head1 weights from raw conv (not sigmoided)
+    auto head1_w = head1_conv_raw->weight.data();
+    head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
+    w.head1_filter = head1_w.squeeze(1).clone(); // (head1_channels, head1_w, head1_h)
+    w.head1_bias = head1_conv_raw->bias.data().clone();
+    
+    // Recompute sigmoided weights
+    auto head1_w_reshaped = w.head1_filter.unsqueeze(1);
+    head1_w_reshaped = head1_w_reshaped.permute({0, 1, 3, 2});
+    w.head1_filter_sigmoided = torch::sigmoid(head1_w_reshaped);
+    
+    // Save head2 weights
+    w.head2_filter = head2_conv->weight.data().clone();
+    w.head2_bias = head2_conv->bias.data().clone();
+    
+    // Save trunk weights (already split into two stages)
+    w.trunk_filter_stage1 = trunk_conv_stage1->weight.data().clone();
+    w.trunk_filter_stage2 = trunk_conv_stage2->weight.data().clone();
+    w.trunk_bias = trunk_conv_stage1->bias.data().clone();
+
+	// save final 1d conv weights
+	w.trunk_fc_0 = trunk_fc_0->weight.data().clone();
+	w.trunk_fc_0_bias = trunk_fc_0->bias.data().clone();
+}
+
+void CustomNetwork0::randomize_weights() {
+	auto seed = time(nullptr);
+    torch::manual_seed(seed);
+    
+    // Randomize head1 weights (raw and sigmoided)
+    for (auto &param : head1_conv_raw->parameters()) {
+        torch::nn::init::normal_(param, 0.0, 0.1);
+    }
+    // Copy raw weights and apply sigmoid for sigmoided version
+    head1_conv->weight.data() = torch::sigmoid(head1_conv_raw->weight.data());
+    head1_conv->bias.data() = head1_conv_raw->bias.data().clone();
+    
+    // Randomize head2 weights
+    for (auto &param : head2_conv->parameters()) {
+        torch::nn::init::normal_(param, 0.0, 0.1);
+    }
+    
+    // Randomize trunk weights
+    for (auto &param : trunk_conv_stage1->parameters()) {
+        torch::nn::init::normal_(param, 0.0, 0.1);
+    }
+
+    for (auto &param : trunk_conv_stage2->parameters()) {
+        torch::nn::init::normal_(param, 0.0, 0.1);
+    }
+
+	for (auto &param : trunk_fc_0->parameters()) {
+		torch::nn::init::normal_(param, 0.0, 0.1);
+	}
+    
+    aslog(1) << "CustomNetwork0: Initialized with random weights (seed=" << seed << ")\n";
+
+}
+
+
 
 }

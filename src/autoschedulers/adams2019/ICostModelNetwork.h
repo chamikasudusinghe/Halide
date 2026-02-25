@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 
 namespace Halide {
 
@@ -24,7 +25,7 @@ public:
 	std::chrono::duration<float, std::milli> collectiveInferenceDuration = std::chrono::duration<float, std::milli>::zero();
 	// BHsketch E ---------
 	//
-    virtual ~ICostModelNetwork() = default;
+    virtual ~ICostModelNetwork();
     
     /**
      * Forward pass through the network.
@@ -107,6 +108,12 @@ public:
             return false;
         }
     }
+
+
+	virtual void initialize_weights(bool randomize_weights, std::string input_weights_path) = 0;
+	virtual void sync_weights_from_network() const = 0;
+	virtual void sync_weights_to_network() = 0;
+	virtual std::shared_ptr<LibTorchWeights> get_weights() = 0;
 };
 
 /**
@@ -127,7 +134,7 @@ public:
 
 	// ############## Functionality common to all models #####################
 	//
-    CustomModelNetwork(const std::string &architecture_type = "adams2019", 
+    CustomModelNetwork(std::string input_weights_path, const std::string &architecture_type = "adams2019",
                        bool use_random_weights = true);
     
     void eval() override { this->torch::nn::Module::eval(); }
@@ -140,9 +147,21 @@ public:
         return params;
     }
 
-	// CustomModelNetwork acts as the interface through which we can call createCustomNetworkFromType,
-	// thus creating an instance of one of the subtypes of this "interface".
-	static std::unique_ptr<CustomModelNetwork> createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights);
+	using Creator = std::function<std::unique_ptr<CustomModelNetwork>(std::string, const std::string&, bool)>;
+	// function to register a new custom model using the REGISTER_LIBTORCH_MODEL macro
+	static void registerModel(std::string name, Creator creator);
+	static std::unordered_map<std::string, Creator>& getRegistry();
+
+	// CustomModelNetwork acts as the interface through which we can call 
+	// createCustomNetworkFromType, thus creating an instance 
+	// of one of the subtypes of this "interface".
+	static std::unique_ptr<CustomModelNetwork> createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights, std::string weights_path);
+
+	void initialize_weights(bool randomize_weights, std::string input_weights_path) override;
+	void sync_weights_from_network() const override;
+	void sync_weights_to_network() override;
+	std::shared_ptr<LibTorchWeights> get_weights() override;
+
 
 	// ############ Virtual methods specific to the custom model #############
 	//
@@ -167,6 +186,10 @@ protected:
     std::string architecture_type_;
 	bool use_random_weights_;
     int num_output_channels_;
+	std::string input_weights_path_;
+
+	// create a LibTorchWeights object that will be shared by our LibTorchCostModel object
+	std::shared_ptr<LibTorchWeights> customWeights;
     
     // Adams2019 architecture (same as Adams2019Network for now)
     // This can be extended to support different architectures
@@ -187,6 +210,31 @@ protected:
 std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     const std::string &model_type_or_path = "adams2019",
     const std::string &weights_path = "");
+
+/*A macro which can be used by a user-defined network to "register" that network into 
+ * our CustomModelNetwork class so that the createCustomNetworkFromType function is 
+ * automatically informed of this class, and can look up the said class using an identifier.
+ * This macro achieves this by creating a helper struct.
+ * This helper struct, on program start, calls the static Register() method defined
+ * in CustomModelNetwork with the name of our new class, and a corresponding function that calls
+ * the constructor of our new class. CustomModelNetwork stores these two things as key and 
+ * value in a customModelRegistry hashmap, and whenever it is asked to create a new model
+ * via createCustomNetworkFromType, it searches through this hashmap for the corresponding 
+ * type, and creates that model if it can.*/
+#define REGISTER_LIBTORCH_MODEL(NAME, TYPE) \
+	namespace { \
+		struct TYPE##Register { \
+			TYPE##Register() { \
+				CustomModelNetwork::registerModel( \
+						NAME, \
+						[](std::string input_weights_path, const std::string& arch_type, bool use_random_weights) -> std::unique_ptr<CustomModelNetwork> { \
+							return std::make_unique<TYPE>(input_weights_path, arch_type, use_random_weights); \
+						}); \
+			} \
+		}; \
+		static TYPE##Register global_##TYPE##Register; \
+	}
+
 
 }  // namespace Halide
 

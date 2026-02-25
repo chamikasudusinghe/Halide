@@ -26,7 +26,7 @@ struct Adams2019Params;
  */
 class CustomNetwork0 : public CustomModelNetwork {
 public:
-    CustomNetwork0(const std::string &architecture_type, bool use_random_weights);
+    CustomNetwork0(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights);
     //CustomNetwork0();
     
     // ICostModelNetwork interface
@@ -37,8 +37,8 @@ public:
 
     void load_weights(const LibTorchWeights &w) override;
     void save_weights(LibTorchWeights &w) const override;
-    
     int get_num_output_channels() const override { return conv1_channels; }
+	//std::shared_ptr<LibTorchWeights> get_weights();
 	
 	// eval(), train(), and parameters()
     //void eval() override { this->torch::nn::Module::eval(); }

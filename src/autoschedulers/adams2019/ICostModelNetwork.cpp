@@ -9,16 +9,20 @@
 #include <torch/torch.h>
 #include "Timer.h"
 #include "CustomNetwork0.h"
+#include <unordered_map>
 
 using Halide::Internal::aslog;
 
 namespace Halide {
 
+ICostModelNetwork::~ICostModelNetwork() = default;
 // CustomModelNetwork implementation
-CustomModelNetwork::CustomModelNetwork(const std::string &architecture_type, 
+CustomModelNetwork::CustomModelNetwork(std::string input_weights_path, const std::string &architecture_type, 
                                        bool use_random_weights)
-    : architecture_type_(architecture_type), num_output_channels_(conv1_channels), use_random_weights_(use_random_weights) {
-    
+    : architecture_type_(architecture_type), num_output_channels_(conv1_channels), use_random_weights_(use_random_weights), input_weights_path_(input_weights_path) {
+
+	customWeights = std::make_shared<LibTorchWeights>();
+	//
     // For now, only support Adams2019 architecture (same as original)
     // This makes it easy to test the flexible system
     // Future: can add other architectures here
@@ -239,19 +243,113 @@ bool CustomModelNetwork::save_to_file(const std::string &path) const {
     }
 }
 
-std::unique_ptr<CustomModelNetwork> CustomModelNetwork::createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights) {
-
-	if(architecture_type == "adams2019" | architecture_type == "Adams2019")	{
-		aslog(0) << "createCustomNetworkFromType: Creating new Adams2019 network"<< "\n";
-		return std::make_unique<Adams2019Network>(architecture_type, use_random_weights);
-	} else if (architecture_type == "custom0") {
-		aslog(0) << "createCustomNetworkFromType: Creating new CustomNetwork0 network"<< "\n";
-		return std::make_unique<CustomNetwork0>(architecture_type, use_random_weights);
-	}
-	// default to Adams2019
-	aslog(0) << "Invalid Architecture input to createCustomNetworkFromType. Defaulting to Adams2019" << "\n";
-	return std::make_unique<Adams2019Network>(architecture_type, use_random_weights);
+using Creator = std::function<std::unique_ptr<CustomModelNetwork>(std::string, const std::string&, bool)>;
+void CustomModelNetwork::registerModel(std::string name, Creator creator) {
+	auto& model_registry = 	getRegistry();
+	model_registry[name] = std::move(creator);
 }
+
+std::unordered_map<std::string, Creator>& CustomModelNetwork::getRegistry() {
+	static std::unordered_map<std::string, Creator> model_registry; 
+	return model_registry;
+}
+
+std::shared_ptr<LibTorchWeights> CustomModelNetwork::get_weights() {
+	return customWeights;
+}
+
+std::unique_ptr<CustomModelNetwork> CustomModelNetwork::createCustomNetworkFromType(const std::string &architecture_type, bool use_random_weights, std::string weights_path) {
+
+	// searching registry to see if we have registered this model before
+	auto& model_registry = getRegistry();
+	auto it = model_registry.find(architecture_type);
+	if (it == model_registry.end()) {
+		aslog(0) << "Invalid architecture input to createCustomNetworkFromType. Defaulting to Adams2019" << "\n";
+		return std::make_unique<Adams2019Network>(weights_path, architecture_type, use_random_weights);
+	}
+
+	aslog(0) << "Creating a model of type "<< architecture_type << "through the registry!!" << "\n";
+	return (it->second)(weights_path, architecture_type, use_random_weights);
+}
+
+void CustomModelNetwork::initialize_weights(bool use_random_weights, std::string input_weights_path) {
+
+		// make sure all the layer parameters have been pushed into the corresponding unordered map entries 
+		// within LibTorchWeights.
+		sync_weights_from_network();
+		bool need_randomize = use_random_weights;
+	
+		// initialize customWeights either from a file or randomly
+        if (!input_weights_path.empty()) {
+            aslog(1) << "CustomModelNetwork: Attempting to load weights from: " << input_weights_path << "\n";
+            
+            bool loaded = false;
+            if (input_weights_path.size() >= 3 && 
+                input_weights_path.substr(input_weights_path.size() - 3) == ".pt") {
+				loaded = customWeights->load_from_libtorch_file_generic(input_weights_path);
+				if(!loaded) {
+                    aslog(0) << "CustomModelNetwork: could not load weights into generic format. Falling back to hardcoded weights\n";
+					// loads hardcoded weights AND converts them to a generic list of tensors within LibTorchWeights which can be handled
+					// by sync_weights_to_networks
+					loaded = customWeights->load_from_libtorch_file(input_weights_path);
+				}
+                if (loaded) {
+                    aslog(1) << "CustomModelNetwork: Loaded weights from LibTorch format (.pt)\n";
+                }
+            }
+            
+            // Fall back to Halide format if LibTorch format failed or not .pt file
+            if (!loaded) {
+                loaded = customWeights->load_from_file(input_weights_path);
+                if (loaded) {
+                    aslog(1) << "CustomModelNetwork: Loaded weights from Halide format\n";
+                }
+            }
+            
+            if (!loaded) {
+                aslog(1) << "LibTorchCostModel: Failed to load weights from " << input_weights_path << ", using random initialization\n";
+                need_randomize = true;
+            }
+        } else {
+            aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
+            need_randomize = true;
+        }
+        
+        if (use_random_weights) {
+            auto seed = time(nullptr);
+            aslog(1) << "Randomizing weights using seed = " << seed << "\n";
+            customWeights->randomize((uint32_t)seed);
+        }
+        
+        // copy tensors from the customWeights object into the corresponding libtorch layer parameters
+        sync_weights_to_network();
+        eval();  // Ensure still in eval mode after loading weights
+}
+
+void CustomModelNetwork::sync_weights_from_network() const {
+	for (const auto &pair : this->named_parameters()) {
+		const std::string &name = pair.key();
+		const torch::Tensor &param = pair.value();
+		customWeights->set_weight(name, param.data());
+	}
+}
+
+// Sync weights → network (GENERIC!)
+void CustomModelNetwork::sync_weights_to_network() {
+	int not_loaded = 0;
+	for (auto &pair : named_parameters()) {
+		if (customWeights->has_weight(pair.key())) {
+			pair.value().data() = customWeights->get_weight(pair.key());
+		} else {
+			not_loaded++;
+		}
+	}
+
+	if(not_loaded > 0) {
+		aslog(0) << "CustomModelNetwork::sync_weights_to_network  " << not_loaded <<" weights could not be loaded from LibTorchWeights::model_weights_\n";
+	}
+}
+
 
 // Factory function
 std::unique_ptr<ICostModelNetwork> create_cost_model_network(
@@ -265,13 +363,13 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     const bool ends_with_weights = (model_type_or_path.size() >= 8 &&
                                    model_type_or_path.substr(model_type_or_path.size() - 8) == ".weights");
     if (ends_with_pt || ends_with_weights) {
-        auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
-        if (custom_model->load_from_file(model_type_or_path)) {
-            aslog(1) << "CustomModelNetwork: Loaded weights from " << model_type_or_path << "\n";
-        } else {
-            aslog(0) << "CustomModelNetwork: Failed to load from " << model_type_or_path
-                     << "; continuing with random weights\n";
-        }
+        auto custom_model = std::make_unique<CustomModelNetwork>(weights_path, "adams2019", true);
+        //if (custom_model->load_from_file(model_type_or_path)) {
+            //aslog(1) << "CustomModelNetwork: Loaded weights from " << model_type_or_path << "\n";
+        //} else {
+            //aslog(0) << "CustomModelNetwork: Failed to load from " << model_type_or_path
+                     //<< "; continuing with random weights\n";
+        //}
         return std::move(custom_model);
     }
     
@@ -279,21 +377,21 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     if (model_type_or_path == "custom" || model_type_or_path == "CustomModelNetwork") {
         //auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
 		aslog(0) << "Created CustomModelNetwork with custom0 architecture (random weights)\n";
-		std::cerr<<"Created CustomModelNetwork with custom0 architecture (random weights)\n";
-		auto custom_model = CustomModelNetwork::createCustomNetworkFromType("custom0", true);
+		//std::cerr<<"Created CustomModelNetwork with custom0 architecture (random weights)\n";
+		auto custom_model = CustomModelNetwork::createCustomNetworkFromType("custom0", true, weights_path);
 
 		// load weights from HL_WEIGHTS_DIR if it is a .pt file
 		if(weights_path.size() >= 3 && weights_path.substr(weights_path.size() - 3) == ".pt") 
 		{
-			if(custom_model->load_from_file(weights_path)) {
-				aslog(1) << "CustomModelNetwork: loaded weights from "<< weights_path << "\n";
-				std::cerr<<"CustomModelNetwork: loaded weights from "<< weights_path << "\n";
-			} else{
-				aslog(1) << "CustomModelNetwork: failed to load weights from "<< weights_path
-							<< "; continuing with random weights\n";
-				std::cerr<<"CustomModelNetwork: failed to load weights from "<< weights_path
-							<< "; continuing with random weights\n";
-			}
+			//if(custom_model->load_from_file(weights_path)) {
+				//aslog(1) << "CustomModelNetwork: loaded weights from "<< weights_path << "\n";
+				//std::cerr<<"CustomModelNetwork: loaded weights from "<< weights_path << "\n";
+			//} else{
+				//aslog(1) << "CustomModelNetwork: failed to load weights from "<< weights_path
+							//<< "; continuing with random weights\n";
+				//std::cerr<<"CustomModelNetwork: failed to load weights from "<< weights_path
+							//<< "; continuing with random weights\n";
+			//}
 		}else{
 			std::cerr<<"CustomModelNetwork: weights are not .pt type: "<<weights_path<<"\n";
 
