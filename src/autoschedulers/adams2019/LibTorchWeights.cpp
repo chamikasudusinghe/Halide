@@ -3,6 +3,7 @@
 #include "NetworkSize.h"
 #include "Errors.h"
 #include "ASLog.h"
+#include <torch/script.h>
 #include <random>
 #include <fstream>
 #include <iostream>
@@ -221,6 +222,23 @@ void LibTorchWeights::randomize(uint32_t seed) {
     loaded = true;
 }
 
+void LibTorchWeights::randomize_generic(uint32_t seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> dist(0.0f, 0.1f);
+
+    for (auto &pair : model_weights_) {
+        auto &tensor = pair.second;
+        auto data = tensor.data_ptr<float>();
+        for (int64_t i = 0; i < tensor.numel(); i++) {
+            data[i] = dist(rng);
+        }
+    }
+
+    loaded = true;
+    aslog(1) << "LibTorchWeights: Randomized " << model_weights_.size()
+             << " generic weights (seed=" << seed << ")\n";
+}
+
 bool LibTorchWeights::is_loaded() const {
     return loaded;
 }
@@ -317,11 +335,10 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
         aslog(0) << "LibTorchWeights: loaded hardcoded weights from " << path << "; proceeding to convert them to a vector of tensors\n";
             model_weights_.clear();
             
+            // Store raw (pre-sigmoid) weights; sigmoid is applied in forward()
             auto head1_w_raw = head1_filter.unsqueeze(1).permute({0, 1, 3, 2});
-            model_weights_["head1_conv_raw.weight"] = head1_w_raw;
-            model_weights_["head1_conv_raw.bias"] = head1_bias;
-            model_weights_["head1_conv.weight"] = head1_filter_sigmoided;
-            model_weights_["head1_conv.bias"] = head1_bias.clone();
+            model_weights_["head1_conv.weight"] = head1_w_raw;
+            model_weights_["head1_conv.bias"] = head1_bias;
             
             model_weights_["head2_conv.weight"] = head2_filter;
             model_weights_["head2_conv.bias"] = head2_bias;
@@ -350,9 +367,8 @@ bool LibTorchWeights::load_from_libtorch_file(const std::string &path) {
     }
 }
 
-bool LibTorchWeights::load_from_libtorch_file_generic(const std::string &path) {
+bool LibTorchWeights::load_from_libtorch_file_generic(const std::string &path, const std::string &format) {
     try {
-		std::cerr<<"called load_from_libtorch_file_generic\n";
         // Check if file exists
         std::ifstream file(path);
         if (!file.good()) {
@@ -360,38 +376,75 @@ bool LibTorchWeights::load_from_libtorch_file_generic(const std::string &path) {
             return false;
         }
         file.close();
-        
-        torch::serialize::InputArchive archive;
-        archive.load_from(path);
-        
-		bool all_loaded = true;
-        for (auto &weight_pair : model_weights_) {
-            const std::string &name = weight_pair.first;
-            
-            try {
-                // Create temp tensor to read into
-                torch::Tensor temp;
-                archive.read(name, temp);
-                
-                if (temp.numel() == 0) {
-                    aslog(0) << "Empty tensor: " << name << "\n";
+
+        if (format == "torchscript") {
+            // Load a TorchScript module (e.g. saved by Python's torch.jit.save)
+            // and extract named_parameters into model_weights_
+            auto module = torch::jit::load(path);
+
+            // Build a map of the loaded parameters
+            std::unordered_map<std::string, torch::Tensor> loaded_params;
+            for (const auto &param : module.named_parameters()) {
+                loaded_params[param.name] = param.value.clone();
+            }
+
+            bool all_loaded = true;
+            for (auto &weight_pair : model_weights_) {
+                const std::string &name = weight_pair.first;
+                auto it = loaded_params.find(name);
+                if (it == loaded_params.end()) {
+                    aslog(0) << "TorchScript: parameter not found: " << name << "\n";
                     all_loaded = false;
                     continue;
                 }
-                
-                model_weights_[name] = temp;
-                
-            } catch (const c10::Error &e) {
-                aslog(0) << "Failed to load: " << name << "\n";
-                all_loaded = false;
+                if (it->second.numel() == 0) {
+                    aslog(0) << "TorchScript: empty tensor: " << name << "\n";
+                    all_loaded = false;
+                    continue;
+                }
+                model_weights_[name] = it->second;
             }
-        }
-        
-        if (!all_loaded) return false;
 
-        loaded = true;
-        aslog(0) << "LibTorchWeights generic read: Successfully loaded weights from " << path << "\n";
-        return true;
+            if (!all_loaded) return false;
+
+            loaded = true;
+            aslog(0) << "LibTorchWeights generic read (torchscript): Successfully loaded "
+                     << model_weights_.size() << " weights from " << path << "\n";
+            return true;
+
+        } else {
+            // Default: C++ OutputArchive format
+            torch::serialize::InputArchive archive;
+            archive.load_from(path);
+
+            bool all_loaded = true;
+            for (auto &weight_pair : model_weights_) {
+                const std::string &name = weight_pair.first;
+
+                try {
+                    torch::Tensor temp;
+                    archive.read(name, temp);
+
+                    if (temp.numel() == 0) {
+                        aslog(0) << "Empty tensor: " << name << "\n";
+                        all_loaded = false;
+                        continue;
+                    }
+
+                    model_weights_[name] = temp;
+
+                } catch (const c10::Error &e) {
+                    aslog(0) << "Failed to load: " << name << "\n";
+                    all_loaded = false;
+                }
+            }
+
+            if (!all_loaded) return false;
+
+            loaded = true;
+            aslog(0) << "LibTorchWeights generic read (archive): Successfully loaded weights from " << path << "\n";
+            return true;
+        }
     } catch (const std::exception &e) {
         aslog(0) << "LibTorchWeights generic read: Standard exception loading weights from " << path << ": " << e.what() << "\n";
         return false;

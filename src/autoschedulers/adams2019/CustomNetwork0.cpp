@@ -38,11 +38,8 @@ static std::string get_env_variable(const std::string &name) {
 CustomNetwork0::CustomNetwork0(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(input_weights_path, architecture_type, use_random_weights) {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
-    // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
-    head1_conv_raw = register_module("head1_conv_raw", 
-        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
-            .stride({head1_h, head1_w}).bias(true)));
-    head1_conv = register_module("head1_conv", 
+    // Single conv layer — sigmoid applied dynamically in forward()
+    head1_conv = register_module("head1_conv",
         torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
             .stride({head1_h, head1_w}).bias(true)));
     
@@ -80,9 +77,12 @@ torch::Tensor CustomNetwork0::forward(const torch::Tensor &pipeline_features,
     auto pf_batch = pipeline_features.contiguous().unsqueeze(1); // (num_stages, 1, head1_w, head1_h)
     pf_batch = pf_batch.permute({0, 1, 3, 2}).contiguous(); // (num_stages, 1, head1_h, head1_w)
     
-    // Apply sigmoid to weights before conv (matching original: squashed_head1_filter)
-    // head1_conv already has sigmoided weights - no swapping needed!
-    auto head1_out = head1_conv->forward(pf_batch); // (num_stages, head1_channels, 1, 1)
+    // Apply sigmoid to raw weights dynamically so gradients flow through during training
+    auto sigmoided_weight = torch::sigmoid(head1_conv->weight);
+    auto head1_out = torch::nn::functional::conv2d(pf_batch, sigmoided_weight,
+        torch::nn::functional::Conv2dFuncOptions()
+            .bias(head1_conv->bias)
+            .stride({head1_h, head1_w})); // (num_stages, head1_channels, 1, 1)
     head1_out = head1_out.squeeze(-1).squeeze(-1); // (num_stages, head1_channels)
     // Expand to batch: (batch, num_stages, head1_channels)
     // Use expand (views) for better performance - no memory copies needed
@@ -135,15 +135,10 @@ torch::Tensor CustomNetwork0::forward(const torch::Tensor &pipeline_features,
 REGISTER_LIBTORCH_MODEL("custom0",CustomNetwork0)
 
 void CustomNetwork0::load_weights(const LibTorchWeights &w) {
-    // Use pre-computed weights from LibTorchWeights (already optimized)
-    // Store raw weights in head1_conv_raw (for saving)
+    // Load raw (pre-sigmoid) weights; sigmoid applied in forward()
     auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
     head1_w_raw = head1_w_raw.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_h, head1_w)
-    head1_conv_raw->weight.data() = head1_w_raw;
-    head1_conv_raw->bias.data() = w.head1_bias.clone();
-    
-    // Use pre-computed sigmoided weights (for forward pass - no swapping needed!)
-    head1_conv->weight.data() = w.head1_filter_sigmoided;
+    head1_conv->weight.data() = head1_w_raw;
     head1_conv->bias.data() = w.head1_bias.clone();
     
     // Load head2 weights (already in correct shape)
@@ -164,13 +159,13 @@ void CustomNetwork0::load_weights(const LibTorchWeights &w) {
 
 void CustomNetwork0::save_weights(LibTorchWeights &w) const {
 	sync_weights_from_network();
-    // Save head1 weights from raw conv (not sigmoided)
-    auto head1_w = head1_conv_raw->weight.data();
+    // Save raw (pre-sigmoid) head1 weights
+    auto head1_w = head1_conv->weight.data();
     head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
     w.head1_filter = head1_w.squeeze(1).clone(); // (head1_channels, head1_w, head1_h)
-    w.head1_bias = head1_conv_raw->bias.data().clone();
-    
-    // Recompute sigmoided weights
+    w.head1_bias = head1_conv->bias.data().clone();
+
+    // Recompute sigmoided weights for compatibility
     auto head1_w_reshaped = w.head1_filter.unsqueeze(1);
     head1_w_reshaped = head1_w_reshaped.permute({0, 1, 3, 2});
     w.head1_filter_sigmoided = torch::sigmoid(head1_w_reshaped);
@@ -192,14 +187,11 @@ void CustomNetwork0::save_weights(LibTorchWeights &w) const {
 void CustomNetwork0::randomize_weights() {
 	auto seed = time(nullptr);
     torch::manual_seed(seed);
-    
-    // Randomize head1 weights (raw and sigmoided)
-    for (auto &param : head1_conv_raw->parameters()) {
+
+    // Randomize head1 raw weights (sigmoid applied dynamically in forward)
+    for (auto &param : head1_conv->parameters()) {
         torch::nn::init::normal_(param, 0.0, 0.1);
     }
-    // Copy raw weights and apply sigmoid for sigmoided version
-    head1_conv->weight.data() = torch::sigmoid(head1_conv_raw->weight.data());
-    head1_conv->bias.data() = head1_conv_raw->bias.data().clone();
     
     // Randomize head2 weights
     for (auto &param : head2_conv->parameters()) {

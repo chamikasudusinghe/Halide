@@ -58,7 +58,8 @@ public:
     // Load weights from LibTorch format (direct tensor loading, faster)
     bool load_from_libtorch_file(const std::string &path);
 	// same, but for generic set of weights (named parameters) within a map
-    bool load_from_libtorch_file_generic(const std::string &path);
+    // format: "archive" (default, C++ OutputArchive), "torchscript" (Python torch.jit.save)
+    bool load_from_libtorch_file_generic(const std::string &path, const std::string &format = "archive");
 
     // Save weights to LibTorch format (direct tensor saving, faster)
     bool save_to_libtorch_file(const std::string &path) const;
@@ -66,6 +67,9 @@ public:
 
     // Randomize weights (for testing)
     void randomize(uint32_t seed);
+
+    // Randomize generic weights stored in model_weights_
+    void randomize_generic(uint32_t seed);
 
     // Check if weights are loaded
     bool is_loaded() const;

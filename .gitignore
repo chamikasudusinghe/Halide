@@ -266,3 +266,7 @@ TAGS
 # TODO: these should become .cmake.in
 !packaging/common/HalideConfig.cmake
 !packaging/common/HalideHelpersConfig.cmake
+
+# Claude Code
+CLAUDE.md
+claude_changes/

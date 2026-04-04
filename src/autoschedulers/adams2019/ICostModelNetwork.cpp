@@ -40,23 +40,21 @@ CustomModelNetwork::CustomModelNetwork(std::string input_weights_path, const std
 void CustomModelNetwork::initialize_adams2019_architecture(bool use_random_weights) {
     // Use the same architecture as Adams2019Network
     // Head1: Conv2d for pipeline features
-    head1_conv_raw = register_module("head1_conv_raw", 
+    // Only one conv layer — sigmoid is applied dynamically in forward()
+    head1_conv = register_module("head1_conv",
         torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
             .stride({head1_h, head1_w}).bias(true)));
-    head1_conv = register_module("head1_conv", 
-        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
-            .stride({head1_h, head1_w}).bias(true)));
-    
-    // Head2: Conv1d for schedule features  
+
+    // Head2: Conv1d for schedule features
     head2_conv = register_module("head2_conv",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_w, head2_channels, 1).bias(true)));
-    
+
     // Trunk: Two-stage conv matching original architecture
     trunk_conv_stage1 = register_module("trunk_conv_stage1",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head1_channels, conv1_channels, 1).bias(true)));
     trunk_conv_stage2 = register_module("trunk_conv_stage2",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
-    
+
     if (use_random_weights) {
         randomize_weights();
     }
@@ -64,23 +62,19 @@ void CustomModelNetwork::initialize_adams2019_architecture(bool use_random_weigh
 
 void CustomModelNetwork::randomize_weights() {
     // Initialize with random weights
-    // Use the same initialization as LibTorchWeights::randomize()
     auto seed = time(nullptr);
     torch::manual_seed(seed);
-    
-    // Randomize head1 weights (raw and sigmoided)
-    for (auto &param : head1_conv_raw->parameters()) {
+
+    // Randomize head1 raw weights (sigmoid applied dynamically in forward)
+    for (auto &param : head1_conv->parameters()) {
         torch::nn::init::normal_(param, 0.0, 0.1);
     }
-    // Copy raw weights and apply sigmoid for sigmoided version
-    head1_conv->weight.data() = torch::sigmoid(head1_conv_raw->weight.data());
-    head1_conv->bias.data() = head1_conv_raw->bias.data().clone();
-    
+
     // Randomize head2 weights
     for (auto &param : head2_conv->parameters()) {
         torch::nn::init::normal_(param, 0.0, 0.1);
     }
-    
+
     // Randomize trunk weights
     for (auto &param : trunk_conv_stage1->parameters()) {
         torch::nn::init::normal_(param, 0.0, 0.1);
@@ -88,7 +82,7 @@ void CustomModelNetwork::randomize_weights() {
     for (auto &param : trunk_conv_stage2->parameters()) {
         torch::nn::init::normal_(param, 0.0, 0.1);
     }
-    
+
     aslog(1) << "CustomModelNetwork: Initialized with random weights (seed=" << seed << ")\n";
 }
 
@@ -98,12 +92,17 @@ torch::Tensor CustomModelNetwork::forward(const torch::Tensor &pipeline_features
                                           int batch_size) {
     // Use the same forward pass as Adams2019Network
     // This makes it easy to test - same architecture, just different initialization
-    
+
     // Head1: Process pipeline features
     auto pf_batch = pipeline_features.contiguous().unsqueeze(1); // (num_stages, 1, head1_w, head1_h)
     pf_batch = pf_batch.permute({0, 1, 3, 2}).contiguous(); // (num_stages, 1, head1_h, head1_w)
-    
-    auto head1_out = head1_conv->forward(pf_batch); // (num_stages, head1_channels, 1, 1)
+
+    // Apply sigmoid to raw weights dynamically so gradients flow through during training
+    auto sigmoided_weight = torch::sigmoid(head1_conv->weight);
+    auto head1_out = torch::nn::functional::conv2d(pf_batch, sigmoided_weight,
+        torch::nn::functional::Conv2dFuncOptions()
+            .bias(head1_conv->bias)
+            .stride({head1_h, head1_w})); // (num_stages, head1_channels, 1, 1)
     head1_out = head1_out.squeeze(-1).squeeze(-1); // (num_stages, head1_channels)
     int num_stages_dim = head1_out.size(0);
     int head1_channels_dim = head1_out.size(1);
@@ -131,14 +130,10 @@ torch::Tensor CustomModelNetwork::forward(const torch::Tensor &pipeline_features
 
 void CustomModelNetwork::load_weights(const LibTorchWeights &w) {
     // Support loading Adams2019-compatible weights
-    // This allows using pre-trained weights with the custom model
+    // head1_filter contains raw (pre-sigmoid) weights; sigmoid is applied in forward()
     auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
     head1_w_raw = head1_w_raw.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_h, head1_w)
-    head1_conv_raw->weight.data() = head1_w_raw;
-    head1_conv_raw->bias.data() = w.head1_bias.clone();
-    
-    // Use pre-computed sigmoided weights
-    head1_conv->weight.data() = w.head1_filter_sigmoided;
+    head1_conv->weight.data() = head1_w_raw;
     head1_conv->bias.data() = w.head1_bias.clone();
     
     // Load head2 weights
@@ -155,12 +150,13 @@ void CustomModelNetwork::load_weights(const LibTorchWeights &w) {
 
 void CustomModelNetwork::save_weights(LibTorchWeights &w) const {
     // Save weights in Adams2019-compatible format
-    auto head1_w = head1_conv_raw->weight.data();
+    // head1_conv stores raw weights; save them and recompute sigmoided for compatibility
+    auto head1_w = head1_conv->weight.data();
     head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
     w.head1_filter = head1_w.squeeze(1).clone(); // (head1_channels, head1_w, head1_h)
-    w.head1_bias = head1_conv_raw->bias.data().clone();
-    
-    // Recompute sigmoided weights
+    w.head1_bias = head1_conv->bias.data().clone();
+
+    // Recompute sigmoided weights for compatibility with code that reads head1_filter_sigmoided
     auto head1_w_reshaped = w.head1_filter.unsqueeze(1);
     head1_w_reshaped = head1_w_reshaped.permute({0, 1, 3, 2});
     w.head1_filter_sigmoided = torch::sigmoid(head1_w_reshaped);
@@ -281,20 +277,24 @@ void CustomModelNetwork::initialize_weights(bool use_random_weights, std::string
 	
 		// initialize customWeights either from a file or randomly
         if (!input_weights_path.empty()) {
-            aslog(1) << "CustomModelNetwork: Attempting to load weights from: " << input_weights_path << "\n";
+            aslog(1) << "CustomModelNetwork::initialize_weights: Attempting to load weights from: " << input_weights_path << "\n";
             
             bool loaded = false;
             if (input_weights_path.size() >= 3 && 
                 input_weights_path.substr(input_weights_path.size() - 3) == ".pt") {
-				loaded = customWeights->load_from_libtorch_file_generic(input_weights_path);
+				// the weight_load_format argument tells the load function that the weights file was stored using python, 
+				// and not using this repository's C++ code. It hence reads a little differently.
+				// to load C++-written weights, this argument should be "archive" (It uses the InputArchive API)
+				std::string weight_load_format = Internal::get_env_variable("HL_WEIGHTS_INPUT_FORMAT");
+				loaded = customWeights->load_from_libtorch_file_generic(input_weights_path, weight_load_format);
 				if(!loaded) {
-                    aslog(0) << "CustomModelNetwork: could not load weights into generic format. Falling back to hardcoded weights\n";
+                    aslog(0) << "CustomModelNetwork::initialize_weights: could not load weights into generic format. Falling back to hardcoded weights\n";
 					// loads hardcoded weights AND converts them to a generic list of tensors within LibTorchWeights which can be handled
 					// by sync_weights_to_networks
 					loaded = customWeights->load_from_libtorch_file(input_weights_path);
 				}
                 if (loaded) {
-                    aslog(1) << "CustomModelNetwork: Loaded weights from LibTorch format (.pt)\n";
+                    aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from LibTorch format (.pt)\n";
                 }
             }
             
@@ -302,23 +302,23 @@ void CustomModelNetwork::initialize_weights(bool use_random_weights, std::string
             if (!loaded) {
                 loaded = customWeights->load_from_file(input_weights_path);
                 if (loaded) {
-                    aslog(1) << "CustomModelNetwork: Loaded weights from Halide format\n";
+                    aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from Halide format\n";
                 }
             }
             
             if (!loaded) {
-                aslog(1) << "LibTorchCostModel: Failed to load weights from " << input_weights_path << ", using random initialization\n";
+                aslog(1) << "CustomModelNetwork::initialize_weights::initialize_weights: Failed to load weights from " << input_weights_path << ", using random initialization\n";
                 need_randomize = true;
             }
         } else {
-            aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
+            aslog(1) << "CustomModelNetwork::initialize_weights: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
             need_randomize = true;
         }
         
         if (use_random_weights) {
             auto seed = time(nullptr);
-            aslog(1) << "Randomizing weights using seed = " << seed << "\n";
-            customWeights->randomize((uint32_t)seed);
+            aslog(1) << "CustomModelNetwork::initialize_weights: Randomizing customWeights using seed = " << seed << "\n";
+            customWeights->randomize_generic((uint32_t)seed);
         }
         
         // copy tensors from the customWeights object into the corresponding libtorch layer parameters
@@ -375,10 +375,11 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     
     // Check for "custom" model type (uses Adams2019 architecture with random weights)
     if (model_type_or_path == "custom" || model_type_or_path == "CustomModelNetwork") {
+		std::string which_custom_model = Internal::get_env_variable("HL_CUSTOM_MODEL_TYPE");
         //auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
-		aslog(0) << "Created CustomModelNetwork with custom0 architecture (random weights)\n";
+		aslog(0) << "ICostModelNetwork::create_cost_model_network: Created CustomModelNetwork with"<< which_custom_model <<"architecture\n";
 		//std::cerr<<"Created CustomModelNetwork with custom0 architecture (random weights)\n";
-		auto custom_model = CustomModelNetwork::createCustomNetworkFromType("custom0", true, weights_path);
+		auto custom_model = CustomModelNetwork::createCustomNetworkFromType(which_custom_model, false, weights_path);
 
 		// load weights from HL_WEIGHTS_DIR if it is a .pt file
 		if(weights_path.size() >= 3 && weights_path.substr(weights_path.size() - 3) == ".pt") 

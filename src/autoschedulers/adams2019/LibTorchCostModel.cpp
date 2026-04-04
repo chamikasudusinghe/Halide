@@ -38,19 +38,16 @@ static std::string get_env_variable(const std::string &name) {
 Adams2019Network::Adams2019Network(std::string input_weights_path, const std::string &architecture_type, bool use_random_weights) : CustomModelNetwork(input_weights_path, architecture_type, use_random_weights) {
     // Head1: Conv2d for pipeline features
     // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
-    // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
-    head1_conv_raw = register_module("head1_conv_raw", 
+    // Single conv layer — sigmoid applied dynamically in forward()
+    head1_conv = register_module("head1_conv",
         torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
             .stride({head1_h, head1_w}).bias(true)));
-    head1_conv = register_module("head1_conv", 
-        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
-            .stride({head1_h, head1_w}).bias(true)));
-    
-    // Head2: Conv1d for schedule features  
+
+    // Head2: Conv1d for schedule features
     // Input: (batch, head2_w=39, num_stages) -> Output: (batch, head2_channels=24, num_stages)
     head2_conv = register_module("head2_conv",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_w, head2_channels, 1).bias(true)));
-    
+
     // Trunk: Two-stage conv matching original architecture
     // Stage1: processes head1 (8 channels) -> 32 channels
     trunk_conv_stage1 = register_module("trunk_conv_stage1",
@@ -59,55 +56,39 @@ Adams2019Network::Adams2019Network(std::string input_weights_path, const std::st
     trunk_conv_stage2 = register_module("trunk_conv_stage2",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
 
-	if(use_random_weights_) {
-		// currently just uses the implementation in its parent class
-		randomize_weights();
-	}
+	initialize_weights(use_random_weights, input_weights_path);
 }
 
 Adams2019Network::Adams2019Network() : CustomModelNetwork("", "adams2019", true) {
     // Head1: Conv2d for pipeline features
-    // Input: (batch, 1, head1_w=40, head1_h=7) -> Output: (batch, head1_channels=8, 1, 1)
-    // Use two conv layers: one for raw weights (for saving), one for sigmoided weights (for forward)
-    head1_conv_raw = register_module("head1_conv_raw", 
+    // Single conv layer — sigmoid applied dynamically in forward()
+    head1_conv = register_module("head1_conv",
         torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
             .stride({head1_h, head1_w}).bias(true)));
-    head1_conv = register_module("head1_conv", 
-        torch::nn::Conv2d(torch::nn::Conv2dOptions(1, head1_channels, {head1_h, head1_w})
-            .stride({head1_h, head1_w}).bias(true)));
-    
-    // Head2: Conv1d for schedule features  
-    // Input: (batch, head2_w=39, num_stages) -> Output: (batch, head2_channels=24, num_stages)
+
+    // Head2: Conv1d for schedule features
     head2_conv = register_module("head2_conv",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_w, head2_channels, 1).bias(true)));
-    
+
     // Trunk: Two-stage conv matching original architecture
-    // Stage1: processes head1 (8 channels) -> 32 channels
     trunk_conv_stage1 = register_module("trunk_conv_stage1",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head1_channels, conv1_channels, 1).bias(true)));
-    // Stage2: processes head2 (24 channels) -> 32 channels (no bias, adds to stage1)
     trunk_conv_stage2 = register_module("trunk_conv_stage2",
         torch::nn::Conv1d(torch::nn::Conv1dOptions(head2_channels, conv1_channels, 1).bias(false)));
-
 }
 
 
 void Adams2019Network::load_weights(const LibTorchWeights &w) {
-    // Use pre-computed weights from LibTorchWeights (already optimized)
-    // Store raw weights in head1_conv_raw (for saving)
+    // Load raw (pre-sigmoid) weights into head1_conv; sigmoid applied in forward()
     auto head1_w_raw = w.head1_filter.unsqueeze(1); // (head1_channels, 1, head1_w, head1_h)
     head1_w_raw = head1_w_raw.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_h, head1_w)
-    head1_conv_raw->weight.data() = head1_w_raw;
-    head1_conv_raw->bias.data() = w.head1_bias.clone();
-    
-    // Use pre-computed sigmoided weights (for forward pass - no swapping needed!)
-    head1_conv->weight.data() = w.head1_filter_sigmoided;
+    head1_conv->weight.data() = head1_w_raw;
     head1_conv->bias.data() = w.head1_bias.clone();
-    
+
     // Load head2 weights (already in correct shape)
     head2_conv->weight.data() = w.head2_filter;
     head2_conv->bias.data() = w.head2_bias.clone();
-    
+
     // Load trunk weights (already split into two stages)
     trunk_conv_stage1->weight.data() = w.trunk_filter_stage1;
     trunk_conv_stage1->bias.data() = w.trunk_bias.clone();
@@ -115,21 +96,21 @@ void Adams2019Network::load_weights(const LibTorchWeights &w) {
 }
 
 void Adams2019Network::save_weights(LibTorchWeights &w) const {
-    // Save head1 weights from raw conv (not sigmoided)
-    auto head1_w = head1_conv_raw->weight.data();
+    // Save raw (pre-sigmoid) head1 weights
+    auto head1_w = head1_conv->weight.data();
     head1_w = head1_w.permute({0, 1, 3, 2}); // (head1_channels, 1, head1_w, head1_h)
     w.head1_filter = head1_w.squeeze(1).clone(); // (head1_channels, head1_w, head1_h)
-    w.head1_bias = head1_conv_raw->bias.data().clone();
-    
-    // Recompute sigmoided weights
+    w.head1_bias = head1_conv->bias.data().clone();
+
+    // Recompute sigmoided weights for compatibility
     auto head1_w_reshaped = w.head1_filter.unsqueeze(1);
     head1_w_reshaped = head1_w_reshaped.permute({0, 1, 3, 2});
     w.head1_filter_sigmoided = torch::sigmoid(head1_w_reshaped);
-    
+
     // Save head2 weights
     w.head2_filter = head2_conv->weight.data().clone();
     w.head2_bias = head2_conv->bias.data().clone();
-    
+
     // Save trunk weights (already split into two stages)
     w.trunk_filter_stage1 = trunk_conv_stage1->weight.data().clone();
     w.trunk_filter_stage2 = trunk_conv_stage2->weight.data().clone();
@@ -149,9 +130,13 @@ torch::Tensor Adams2019Network::forward(const torch::Tensor &pipeline_features,
     auto pf_batch = pipeline_features.contiguous().unsqueeze(1); // (num_stages, 1, head1_w, head1_h)
     pf_batch = pf_batch.permute({0, 1, 3, 2}).contiguous(); // (num_stages, 1, head1_h, head1_w)
     
-    // Apply sigmoid to weights before conv (matching original: squashed_head1_filter)
-    // head1_conv already has sigmoided weights - no swapping needed!
-    auto head1_out = head1_conv->forward(pf_batch); // (num_stages, head1_channels, 1, 1)
+    // Apply sigmoid to raw weights dynamically (matching original: squashed_head1_filter)
+    // This keeps sigmoid in the autograd graph so gradients flow through during training
+    auto sigmoided_weight = torch::sigmoid(head1_conv->weight);
+    auto head1_out = torch::nn::functional::conv2d(pf_batch, sigmoided_weight,
+        torch::nn::functional::Conv2dFuncOptions()
+            .bias(head1_conv->bias)
+            .stride({head1_h, head1_w})); // (num_stages, head1_channels, 1, 1)
     head1_out = head1_out.squeeze(-1).squeeze(-1); // (num_stages, head1_channels)
     // Expand to batch: (batch, num_stages, head1_channels)
     // Use expand (views) for better performance - no memory copies needed
@@ -187,6 +172,8 @@ torch::Tensor Adams2019Network::forward(const torch::Tensor &pipeline_features,
     
     return trunk_out;
 }
+
+REGISTER_LIBTORCH_MODEL("adams2019", Adams2019Network)
 
 // LibTorchCostModel implementation
 LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
@@ -236,64 +223,64 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
         actual_weights_path = get_env_variable("HL_WEIGHTS_DIR");
     }
     
-    // Only load weights for Adams2019 networks (custom models are already loaded)
-    if (is_adams2019) {
-        if (!actual_weights_path.empty()) {
-            aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
-			std::cerr << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
+    //// Only load weights for Adams2019 networks (custom models are already loaded)
+    //if (is_adams2019) {
+        //if (!actual_weights_path.empty()) {
+            //aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
+			//std::cerr << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
             
-            // Try LibTorch format first (faster, direct loading)
-            // Check if file ends with .pt (PyTorch/LibTorch format)
-            bool loaded = false;
-            if (actual_weights_path.size() >= 3 && 
-                actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
-                loaded = weights->load_from_libtorch_file(actual_weights_path);
-                if (loaded) {
-                    aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
-					std::cerr << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
-                }
-            }
+            //// Try LibTorch format first (faster, direct loading)
+            //// Check if file ends with .pt (PyTorch/LibTorch format)
+            //bool loaded = false;
+            //if (actual_weights_path.size() >= 3 && 
+                //actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
+                //loaded = weights->load_from_libtorch_file(actual_weights_path);
+                //if (loaded) {
+                    //aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
+					//std::cerr << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
+                //}
+            //}
             
-            // Fall back to Halide format if LibTorch format failed or not .pt file
-            if (!loaded) {
-                loaded = weights->load_from_file(actual_weights_path);
-                if (loaded) {
-                    aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
-					std::cerr << "LibTorchCostModel: Loaded weights from Halide format\n";
-                }
-            }
+            //// Fall back to Halide format if LibTorch format failed or not .pt file
+            //if (!loaded) {
+                //loaded = weights->load_from_file(actual_weights_path);
+                //if (loaded) {
+                    //aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
+					//std::cerr << "LibTorchCostModel: Loaded weights from Halide format\n";
+                //}
+            //}
             
-            if (!loaded) {
-                aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
-				std::cerr << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
-                need_randomize = true;
-            }
-        } else {
-            aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
-            need_randomize = true;
-        }
+            //if (!loaded) {
+                //aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
+				//std::cerr << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
+                //need_randomize = true;
+            //}
+        //} else {
+            //aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
+            //need_randomize = true;
+        //}
         
-        if (need_randomize) {
-            auto seed = time(nullptr);
-            aslog(1) << "Randomizing weights using seed = " << seed << "\n";
-            weights->randomize((uint32_t)seed);
-        }
+        //if (need_randomize) {
+            //auto seed = time(nullptr);
+            //aslog(1) << "Randomizing weights using seed = " << seed << "\n";
+            //weights->randomize((uint32_t)seed);
+        //}
         
-		if (torch::isnan(weights->trunk_fc_0).any().item<bool>()) {
-			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 contains NaN values!\n";
-		}else{
-			std::cerr << "LibTorchCostModel constructor, trunk_fc_0 does NOT NaN values\n";
-		}
+		//if (torch::isnan(weights->trunk_fc_0).any().item<bool>()) {
+			//std::cerr << "LibTorchCostModel constructor, trunk_fc_0 contains NaN values!\n";
+		//}else{
+			//std::cerr << "LibTorchCostModel constructor, trunk_fc_0 does NOT NaN values\n";
+		//}
 
-        // Load weights into network
-        //network->load_weights(weights); // this is what you would do for the earlier
-										// libtorch version but now we're using a different 
-										// function for the same
-		network->sync_weights_to_network();
-        network->eval();  // Ensure still in eval mode after loading weights
-    } else {
-        aslog(1) << "LibTorchCostModel: Using custom model, weights already loaded\n";
-    }
+        //// Load weights into network
+        ////network->load_weights(weights); // this is what you would do for the earlier
+										//// libtorch version but now we're using a different 
+										//// function for the same
+		//network->sync_weights_to_network();
+        //network->eval();  // Ensure still in eval mode after loading weights
+    //} else {
+        //aslog(1) << "LibTorchCostModel: Using custom model, weights already loaded\n";
+    //}
 
     // Warm up LibTorch with a dummy forward pass to avoid first-call overhead
     // This initializes any lazy operations and can prevent hangs
@@ -789,7 +776,7 @@ std::unique_ptr<LibTorchCostModel> make_libtorch_cost_model(const std::string &w
                                                            bool randomize_weights) {
     return std::unique_ptr<LibTorchCostModel>(new LibTorchCostModel(weights_in_path, weights_out_path, randomize_weights));
 }
-REGISTER_LIBTORCH_MODEL("Adams2019", Adams2019Network)
+//REGISTER_LIBTORCH_MODEL("Adams2019", Adams2019Network)
 
 }
 

@@ -193,7 +193,8 @@ protected:
     
     // Adams2019 architecture (same as Adams2019Network for now)
     // This can be extended to support different architectures
-    torch::nn::Conv2d head1_conv_raw{nullptr};
+    // head1_conv stores raw (pre-sigmoid) weights. Sigmoid is applied dynamically
+    // in forward() so that gradients flow through it during training.
     torch::nn::Conv2d head1_conv{nullptr};
     torch::nn::Conv1d head2_conv{nullptr};
     torch::nn::Conv1d trunk_conv_stage1{nullptr};

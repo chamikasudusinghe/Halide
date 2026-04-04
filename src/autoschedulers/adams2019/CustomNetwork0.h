@@ -55,11 +55,9 @@ private:
     void randomize_weights() override;
 
     // Head1: processes pipeline features (40x7) -> 8 channels
-	//Use separate conv layer with sigmoided weights to avoid weight swapping overhead
-	
-	torch::nn::Conv2d head1_conv_raw{nullptr};  // Stores raw weights (for saving)
-	torch::nn::Conv2d head1_conv{nullptr};  // Uses sigmoided weights (for forward pass)
-	
+	// Single conv layer — sigmoid applied dynamically in forward()
+	torch::nn::Conv2d head1_conv{nullptr};
+
 	// Head2: processes schedule features (39) -> 24 channels
 	torch::nn::Conv1d head2_conv{nullptr};
 	
