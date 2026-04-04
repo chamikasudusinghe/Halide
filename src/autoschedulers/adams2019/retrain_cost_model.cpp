@@ -442,7 +442,7 @@ int main(int argc, char **argv) {
         float v_correct_ordering_rate_count[kModels] = {0};
 
         for (int e = 0; e < flags.epochs; e++) {
-			metrics_log << e << ", " << learning_rate <<", ";
+			metrics_log << e << ", " <<learning_rate*std::pow(0.98, e)<<", ";
             int counter = 0;
 
             float worst_miss = 0;
@@ -555,7 +555,8 @@ int main(int argc, char **argv) {
 
                         float loss = 0.0f;
                         if (train) {
-                            loss = tp->backprop(runtimes, learning_rate);
+							float decayed_learning_rate = learning_rate*std::pow(0.98, e);
+                            loss = tp->backprop(runtimes, decayed_learning_rate);
                             assert(!std::isnan(loss));
                             loss_sum[model] += loss;
                             loss_sum_counter[model]++;
@@ -675,7 +676,7 @@ int main(int argc, char **argv) {
                 std::cout << "Worst inversion:\n"
                           << leaf(worst_inversion.f1) << " predicted: " << worst_inversion.p1 << " actual: " << worst_inversion.r1 << "\n"
                           << leaf(worst_inversion.f2) << " predicted: " << worst_inversion.p2 << " actual: " << worst_inversion.r2 << "\n";
-                if (samples.size() > 50000) {
+                if (samples.size() > 250) {
                     // For robustness during training on large numbers
                     // of random pipelines, we discard poorly
                     // performing samples from the training set
