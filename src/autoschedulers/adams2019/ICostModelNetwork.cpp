@@ -276,50 +276,43 @@ void CustomModelNetwork::initialize_weights(bool use_random_weights, std::string
 		bool need_randomize = use_random_weights;
 	
 		// initialize customWeights either from a file or randomly
-        if (!input_weights_path.empty()) {
-            aslog(1) << "CustomModelNetwork::initialize_weights: Attempting to load weights from: " << input_weights_path << "\n";
-            
-            bool loaded = false;
-            if (input_weights_path.size() >= 3 && 
-                input_weights_path.substr(input_weights_path.size() - 3) == ".pt") {
-				// the weight_load_format argument tells the load function that the weights file was stored using python, 
-				// and not using this repository's C++ code. It hence reads a little differently.
-				// to load C++-written weights, this argument should be "archive" (It uses the InputArchive API)
-				std::string weight_load_format = Internal::get_env_variable("HL_WEIGHTS_INPUT_FORMAT");
-				loaded = customWeights->load_from_libtorch_file_generic(input_weights_path, weight_load_format);
-				if(!loaded) {
-                    aslog(0) << "CustomModelNetwork::initialize_weights: could not load weights into generic format. Falling back to hardcoded weights\n";
-					// loads hardcoded weights AND converts them to a generic list of tensors within LibTorchWeights which can be handled
-					// by sync_weights_to_networks
-					loaded = customWeights->load_from_libtorch_file(input_weights_path);
-				}
-                if (loaded) {
-                    aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from LibTorch format (.pt)\n";
-                }
-            }
-            
-            // Fall back to Halide format if LibTorch format failed or not .pt file
-            if (!loaded) {
-                loaded = customWeights->load_from_file(input_weights_path);
-                if (loaded) {
-                    aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from Halide format\n";
-                }
-            }
-            
-            if (!loaded) {
-                aslog(1) << "CustomModelNetwork::initialize_weights::initialize_weights: Failed to load weights from " << input_weights_path << ", using random initialization\n";
-                need_randomize = true;
-            }
-        } else {
-            aslog(1) << "CustomModelNetwork::initialize_weights: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
-            need_randomize = true;
-        }
-        
-        if (use_random_weights) {
+		
+        if (need_randomize) {
             auto seed = time(nullptr);
             aslog(1) << "CustomModelNetwork::initialize_weights: Randomizing customWeights using seed = " << seed << "\n";
             customWeights->randomize_generic((uint32_t)seed);
-        }
+        } else {
+
+			if (!input_weights_path.empty()) {
+				aslog(1) << "CustomModelNetwork::initialize_weights: Attempting to load weights from: " << input_weights_path << "\n";
+
+				bool loaded = false;
+				if (input_weights_path.size() >= 3 && 
+						input_weights_path.substr(input_weights_path.size() - 3) == ".pt") {
+					// the weight_load_format argument tells the load function that the weights file was stored using python, 
+					// and not using this repository's C++ code. It hence reads a little differently.
+					// to load C++-written weights, this argument should be "archive" (It uses the InputArchive API)
+					std::string weight_load_format = Internal::get_env_variable("HL_WEIGHTS_INPUT_FORMAT");
+					loaded = customWeights->load_from_libtorch_file_generic(input_weights_path, weight_load_format);
+					if(!loaded) 
+					{
+						aslog(0) << "CustomModelNetwork::initialize_weights: could not load weights into generic format. Falling back to random weights\n";
+					} else if (loaded) {
+						aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from LibTorch format (.pt)\n";
+					}
+				}
+
+			} else {
+				aslog(1) << "CustomModelNetwork::initialize_weights: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
+				need_randomize = true;
+			}
+
+			if (need_randomize) {
+				auto seed = time(nullptr);
+				aslog(1) << "CustomModelNetwork::initialize_weights: Randomizing customWeights using seed = " << seed << "\n";
+				customWeights->randomize_generic((uint32_t)seed);
+			}
+		}
         
         // copy tensors from the customWeights object into the corresponding libtorch layer parameters
         sync_weights_to_network();
@@ -355,57 +348,55 @@ void CustomModelNetwork::sync_weights_to_network() {
 std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     const std::string &model_type_or_path,
     const std::string &weights_path) {
+
+	// BHsketch | NOTE: we're currently treating ALL libtorch models as being "custom" models.
+	// so to create the OG hailde model, the user must specify "adams2019", but to create a 
+	// libtorch model, specify "custom". 
+	// Then use HL_CUSTOM_MODEL_TYPE env variable to specify what kind of custom model. 
     
+	bool need_random_weights = false;
 	Internal::Autoscheduler::ScopedTimer model_creation_timer("timing model creation time"); 
-    // If HL_COST_MODEL_TYPE is a path, treat it as "custom network + load weights/model from that path".
+
+    // === If HL_COST_MODEL_TYPE is a path, treat it as "custom network + load weights/model from that path".
+	// ======================================================================================================
     const bool ends_with_pt = (model_type_or_path.size() >= 3 &&
                               model_type_or_path.substr(model_type_or_path.size() - 3) == ".pt");
     const bool ends_with_weights = (model_type_or_path.size() >= 8 &&
                                    model_type_or_path.substr(model_type_or_path.size() - 8) == ".weights");
-    if (ends_with_pt || ends_with_weights) {
-        auto custom_model = std::make_unique<CustomModelNetwork>(weights_path, "adams2019", true);
-        //if (custom_model->load_from_file(model_type_or_path)) {
-            //aslog(1) << "CustomModelNetwork: Loaded weights from " << model_type_or_path << "\n";
-        //} else {
-            //aslog(0) << "CustomModelNetwork: Failed to load from " << model_type_or_path
-                     //<< "; continuing with random weights\n";
-        //}
+    if (ends_with_pt) {
+		aslog(0) << "create_cost_model_network: model_type_or_path is a path. Assuming adams2019 libtorch model with weights from the given path\n";
+        auto custom_model = CustomModelNetwork::createCustomNetworkFromType("adams2019", false, model_type_or_path);
         return std::move(custom_model);
-    }
+    } else if(ends_with_weights) {
+		aslog(0) << "create_cost_model_network: Error: The .weights format is not supported for libtorch model. \
+							Please provide weights as an archive or in a torchscript format. Using random weights for now. \n";
+		need_random_weights = true;
+	}
+	// ======================================================================================================
     
     // Check for "custom" model type (uses Adams2019 architecture with random weights)
-    if (model_type_or_path == "custom" || model_type_or_path == "CustomModelNetwork") {
+    if (model_type_or_path == "custom" || model_type_or_path == "CustomModelNetwork") 
+	{
+
+		// find out which custom model, and create it 
+		// weight initialization is hardcoded to not random for now... 
 		std::string which_custom_model = Internal::get_env_variable("HL_CUSTOM_MODEL_TYPE");
-        //auto custom_model = std::make_unique<CustomModelNetwork>("adams2019", true);
-		aslog(0) << "ICostModelNetwork::create_cost_model_network: Created CustomModelNetwork with"<< which_custom_model <<"architecture\n";
-		//std::cerr<<"Created CustomModelNetwork with custom0 architecture (random weights)\n";
-		auto custom_model = CustomModelNetwork::createCustomNetworkFromType(which_custom_model, false, weights_path);
+		auto custom_model = CustomModelNetwork::createCustomNetworkFromType(which_custom_model, need_random_weights, weights_path);
+		aslog(0) << "ICostModelNetwork::create_cost_model_network: Created CustomModelNetwork with "<< which_custom_model <<" architecture\n";
+		// ---------------------------------------------------------------------------------
 
-		// load weights from HL_WEIGHTS_DIR if it is a .pt file
-		if(weights_path.size() >= 3 && weights_path.substr(weights_path.size() - 3) == ".pt") 
-		{
-			//if(custom_model->load_from_file(weights_path)) {
-				//aslog(1) << "CustomModelNetwork: loaded weights from "<< weights_path << "\n";
-				//std::cerr<<"CustomModelNetwork: loaded weights from "<< weights_path << "\n";
-			//} else{
-				//aslog(1) << "CustomModelNetwork: failed to load weights from "<< weights_path
-							//<< "; continuing with random weights\n";
-				//std::cerr<<"CustomModelNetwork: failed to load weights from "<< weights_path
-							//<< "; continuing with random weights\n";
-			//}
-		}else{
-			std::cerr<<"CustomModelNetwork: weights are not .pt type: "<<weights_path<<"\n";
-
-		}
         return std::move(custom_model);
     }
     
-    // Check for known model types
+	// suppose HL_USE_LIBTORCH_COST_MODEL is true (else we wouldn't be in this function) 
+	// but type is not custom and it's not a path either. Check for known model types to
+	// infer what the user may want ====================================================
     if (model_type_or_path == "adams2019" || 
         model_type_or_path == "default" || 
         model_type_or_path == "" || 
         model_type_or_path == "Adams2019") {
-        auto network = std::make_unique<Adams2019Network>();
+
+		auto network = CustomModelNetwork::createCustomNetworkFromType("adams2019", false, weights_path);
         
         // If weights_path is provided and it's a .weights file, load weights
         // (Custom models loaded from .pt files are handled above)
@@ -416,7 +407,7 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
             // This is just creating the network structure
         }
         
-        aslog(1) << "Created Adams2019 network\n";
+        aslog(0) << "Created Adams2019 network\n";
         return std::move(network);
     }
     
@@ -424,7 +415,7 @@ std::unique_ptr<ICostModelNetwork> create_cost_model_network(
     aslog(0) << "Unknown model type: " << model_type_or_path 
              << ", falling back to Adams2019\n";
     aslog(0) << "Available model types: adams2019, custom, or path to .pt/.weights file\n";
-    return std::make_unique<Adams2019Network>();
+	return CustomModelNetwork::createCustomNetworkFromType("adams2019", false, weights_path);
 }
 
 }  // namespace Halide

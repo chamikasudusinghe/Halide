@@ -212,10 +212,6 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     bool need_randomize = randomize_weights;
     string actual_weights_path = weights_in_path;
     
-    // Check if we have an Adams2019 network that needs weight loading
-    bool is_adams2019 = (dynamic_cast<Adams2019Network*>(network.get()) != nullptr);
-    bool is_custom = (dynamic_cast<CustomModelNetwork*>(network.get()) != nullptr);
-
 	weights = network->get_weights();
     
     // If weights_in_path is empty, try environment variable
@@ -223,68 +219,6 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
         actual_weights_path = get_env_variable("HL_WEIGHTS_DIR");
     }
     
-    //// Only load weights for Adams2019 networks (custom models are already loaded)
-    //if (is_adams2019) {
-        //if (!actual_weights_path.empty()) {
-            //aslog(1) << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
-			//std::cerr << "LibTorchCostModel: Attempting to load weights from: " << actual_weights_path << "\n";
-            
-            //// Try LibTorch format first (faster, direct loading)
-            //// Check if file ends with .pt (PyTorch/LibTorch format)
-            //bool loaded = false;
-            //if (actual_weights_path.size() >= 3 && 
-                //actual_weights_path.substr(actual_weights_path.size() - 3) == ".pt") {
-                //loaded = weights->load_from_libtorch_file(actual_weights_path);
-                //if (loaded) {
-                    //aslog(1) << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
-					//std::cerr << "LibTorchCostModel: Loaded weights from LibTorch format (.pt)\n";
-                //}
-            //}
-            
-            //// Fall back to Halide format if LibTorch format failed or not .pt file
-            //if (!loaded) {
-                //loaded = weights->load_from_file(actual_weights_path);
-                //if (loaded) {
-                    //aslog(1) << "LibTorchCostModel: Loaded weights from Halide format\n";
-					//std::cerr << "LibTorchCostModel: Loaded weights from Halide format\n";
-                //}
-            //}
-            
-            //if (!loaded) {
-                //aslog(1) << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
-				//std::cerr << "LibTorchCostModel: Failed to load weights from " << actual_weights_path << ", using random initialization\n";
-                //need_randomize = true;
-            //}
-        //} else {
-            //aslog(1) << "LibTorchCostModel: No weights path specified (weights_in_path empty, HL_WEIGHTS_DIR not set), using random initialization\n";
-            //need_randomize = true;
-        //}
-        
-        //if (need_randomize) {
-            //auto seed = time(nullptr);
-            //aslog(1) << "Randomizing weights using seed = " << seed << "\n";
-            //weights->randomize((uint32_t)seed);
-        //}
-        
-		//if (torch::isnan(weights->trunk_fc_0).any().item<bool>()) {
-			//std::cerr << "LibTorchCostModel constructor, trunk_fc_0 contains NaN values!\n";
-		//}else{
-			//std::cerr << "LibTorchCostModel constructor, trunk_fc_0 does NOT NaN values\n";
-		//}
-
-        //// Load weights into network
-        ////network->load_weights(weights); // this is what you would do for the earlier
-										//// libtorch version but now we're using a different 
-										//// function for the same
-		//network->sync_weights_to_network();
-        //network->eval();  // Ensure still in eval mode after loading weights
-    //} else {
-        //aslog(1) << "LibTorchCostModel: Using custom model, weights already loaded\n";
-    //}
-
-    // Warm up LibTorch with a dummy forward pass to avoid first-call overhead
-    // This initializes any lazy operations and can prevent hangs
-    // Use a small warm-up to minimize overhead
     try {
         torch::NoGradGuard no_grad;
         auto dummy_pf = torch::zeros({1, head1_w, head1_h}, torch::kFloat32);
