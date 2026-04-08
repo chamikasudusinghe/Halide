@@ -461,7 +461,7 @@ int main(int argc, char **argv) {
 #pragma omp parallel for
 #endif
             for (int model = 0; model < kModels; model++) {
-                for (int train = 0; train < 2; train++) {
+                for (int train = 0; train < 1; train++) {
                     auto &tp = tpp[model];
 
                     for (auto &p : train ? samples : validation_set) {
@@ -476,8 +476,44 @@ int main(int argc, char **argv) {
                         if (p.second.schedules.size() < 8) {
                             continue;
                         }
+						
+						if (p.first == 15) {                                                             
+							int idx = 0;
+							for (auto &sched : p.second.schedules) {           
+								std::cerr << "  idx=" << idx << " schedule_hash=" << sched.first
+									<< " schedule_id=" << sched.second.schedule_id << std::endl;
+								idx++;
+							}
+						}
+
+
+						if (p.first == 15) {
+							int idx = 0;
+							for (auto &sched : p.second.schedules) {
+								if (sched.second.schedule_id == 150000) {
+									std::cerr << "=== DEBUG pipeline=15 schedule_id=150000 at idx=" << idx << " ===" << std::endl;
+									auto &sf = sched.second.schedule_features;
+									int num_stages = p.second.num_stages;
+									std::cerr << "sf shape: " << sf.dim(0).extent() << " x " << sf.dim(1).extent() << std::endl;
+									std::cerr << "sf[:5,0] = ";
+									for (int j = 0; j < 5; j++) std::cerr << sf(j, 0) << " ";
+									std::cerr << std::endl;
+									std::cerr << "sf[24,:] = ";
+									for (int s = 0; s < num_stages; s++) std::cerr << sf(24, s) << " ";
+									std::cerr << std::endl;
+									std::cerr << "sf[25,:] = ";
+									for (int s = 0; s < num_stages; s++) std::cerr << sf(25, s) << " ";
+									std::cerr << std::endl;
+								}
+								idx++;
+							}
+						}
+
+
                         tp->reset();
 						//std::cerr<<"	setting pipeline features\n";
+						//
+						std::cerr<<"num_cores: "<<flags.num_cores<<"\n";
                         tp->set_pipeline_features(LibTorchWeights::buffer_to_tensor_public(p.second.pipeline_features).permute({2, 0, 1}).contiguous(), 
 													flags.num_cores);
 
@@ -574,6 +610,21 @@ int main(int argc, char **argv) {
                                 it++;
                             }
                         } else {
+							 // Debug: print first few feature values                                                                                                                                                                                                                                   
+							if (counter == 0) {  // only for first pipeline
+								std::cerr << "pipeline "<< p.second.pipeline_id <<"\n";
+								std::cerr << "pf shape: " << p.second.pipeline_features.dim(0).extent()
+									<< "x" << p.second.pipeline_features.dim(1).extent()
+									<< "x" << p.second.pipeline_features.dim(2).extent() << "\n";
+								std::cerr << "pf[0:5,0,0]: ";
+								for (int i = 0; i < 5 && i < p.second.pipeline_features.dim(0).extent(); i++)
+									std::cerr << p.second.pipeline_features(i, 0, 0) << " ";
+								std::cerr << "\nsf[0:5,0]: ";
+								auto &first_sched = p.second.schedules.begin()->second;
+								for (int i = 0; i < 5 && i < first_sched.schedule_features.dim(0).extent(); i++)
+									std::cerr << first_sched.schedule_features(i, 0) << " ";
+								std::cerr << "\n";                                                                                                                                                                                                                                                     
+							}
                             tp->evaluate_costs();
                         }
 
@@ -581,7 +632,29 @@ int main(int argc, char **argv) {
 						// schedule, that is good++
                         if (true) {
                             int good = 0, bad = 0;
+							std::ofstream predictions_csv("cpp_predictions.csv");
+							// 2. Check if the file opened successfully
+							if (predictions_csv.is_open()) {
+								// 3. Write data to the file
+								predictions_csv << "pipeline_id,schedule_id,prediction\n";
+								// 4. Close the file
+							} else {
+								std::cerr << "Unable to open predictions csv file";
+							}
+
                             for (auto &sched : p.second.schedules) {
+
+								if (predictions_csv.is_open()) {
+									// 3. Write data to the file
+									predictions_csv << p.second.pipeline_id 
+													<< ","<< sched.second.schedule_id 
+													<< ","<< sched.second.runtimes[0]
+													<< "\n";
+									// 4. Close the file
+								} else {
+									std::cerr << "Unable to open predictions csv file";
+								}
+
                                 auto &ref = p.second.schedules[p.second.fastest_schedule_hash];
                                 if (sched.second.prediction[model] == 0) {
                                     continue;
@@ -611,6 +684,12 @@ int main(int argc, char **argv) {
                                     bad++;
                                 }
                             }
+							
+							if(predictions_csv.is_open()) 
+							{
+								predictions_csv.close();
+							}
+
                             if (train) {
                                 correct_ordering_rate_sum[model] += good;
                                 correct_ordering_rate_count[model] += good + bad;

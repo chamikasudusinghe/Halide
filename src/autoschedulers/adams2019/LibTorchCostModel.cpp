@@ -414,6 +414,11 @@ torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Ten
     
     // Optimized: Use UnpackedScheduleFeatures to avoid many select() + transpose() operations
     auto features = UnpackedScheduleFeatures::unpack(schedule_features_tensor);
+
+	//std::cerr << "  Raw sf[8,24,5] = " << schedule_features_tensor[8][24][5].item<float>() << "\n";
+	//std::cerr << "  Raw sf[8,25,5] = " << schedule_features_tensor[8][25][5].item<float>() << "\n";
+	//std::cerr << "  Unpacked n_vec[5,8] = " << features.num_vectors[5][8].item<float>() << "\n";
+	//std::cerr << "  Unpacked n_scal[5,8] = " << features.num_scalars[5][8].item<float>() << "\n";
     
     // In original Halide: relu1(c, w, n) where c=channel, w=stage, n=batch
     // In LibTorch: coefficients is (batch, num_stages, conv1_channels)
@@ -514,12 +519,33 @@ torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Ten
         auto stage_cost = compute_cost + store_cost * 2 + load_cost +
                          malloc_cost + parallelism_cost + ws_cost;
         stage_costs.push_back(stage_cost);
+
+
+		if (s == 5) {
+			std::cerr << "  Stage 5 debug:\n";
+			std::cerr << "    inlined=" << inlined[0].item<float>()
+				<< " vec_size=" << vec_size[0].item<float>()
+				<< " n_vec=" << n_vec[0].item<float>()
+				<< " n_scal=" << n_scal[0].item<float>() << "\n";
+			std::cerr << "    compute_cost=" << compute_cost[0].item<float>() << "\n";
+			std::cerr << "    load_cost=" << load_cost[0].item<float>() << "\n";
+			std::cerr << "    store_cost=" << store_cost[0].item<float>() << "\n";
+			std::cerr << "    malloc_cost=" << malloc_cost[0].item<float>() << "\n";
+			std::cerr << "    parallelism_cost=" << parallelism_cost[0].item<float>() << "\n";
+			std::cerr << "    ws_cost=" << ws_cost[0].item<float>() << "\n";
+			std::cerr << "    stage_cost=" << stage_cost[0].item<float>() << "\n";                                                                                                                                                                                                 
+		}
+
+		std::cerr << "    stage " << s << ": cost=" << stage_cost[0].item<float>() << "\n";
     }
     
     // Stack and sum across stages, then convert to runtime
     auto total_cost = torch::stack(stage_costs, 0); // (num_stages, batch)
     total_cost = torch::sum(total_cost, 0); // (batch,)
     auto prediction = total_cost * 1e-9f;
+
+	std::cerr << "  total_cost=" << total_cost[0].item<float>()
+            << " prediction=" << prediction[0].item<float>() << "\n";
     
     return prediction;
 }
@@ -531,6 +557,8 @@ void LibTorchCostModel::evaluate_costs() {
     
     internal_assert(pipeline_feat_queue.size() > 0);
     internal_assert(num_stages > 0) << "num_stages must be set before evaluating costs";
+
+
     
     // Batch all schedule features using optimized converter
     // schedule_feat_queue contains (num_stages, head2_w) tensors
@@ -561,6 +589,17 @@ void LibTorchCostModel::evaluate_costs() {
 	//BHsketch E ----
 													   //
     auto coefficients = network->forward(pipeline_features, schedule_features_batch, num_stages, cursor);
+
+	if (num_stages == 19) {  // or use a pipeline_id check if available
+		std::cerr << "coefficients shape: " << coefficients.sizes() << "\n";
+		std::cerr << "coefficients[8,0,0:5]: ";
+		for (int i = 0; i < 32; i++)
+			std::cerr << coefficients[8][0][i].item<float>() << " ";
+		//std::cerr << "\ncoefficients[8,0,28:32]: ";
+		//for (int i = 28; i < 32; i++)
+			//std::cerr << coefficients[8][0][i].item<float>() << " ";
+		std::cerr << "\n";
+	}
     
     // Compute costs from coefficients
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
@@ -639,6 +678,8 @@ float LibTorchCostModel::backprop(const Runtime::Buffer<const float> &true_runti
 	//std::cerr<<"LibTorchCostModel::backprop: before compute_costs_from_coeff, num cores is "<<num_cores<<"\n";
 
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
+
+	//std::cerr<<"predictions: "<< predictions <<"\n";
     
     // Convert true runtimes to tensor
     auto true_runtimes_tensor = torch::from_blob((void*)true_runtimes.data(), {cursor}, torch::kFloat32).clone();
