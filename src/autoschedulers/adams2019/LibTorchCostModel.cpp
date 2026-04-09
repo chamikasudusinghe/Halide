@@ -521,22 +521,24 @@ torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Ten
         stage_costs.push_back(stage_cost);
 
 
-		if (s == 5) {
+		if (s == 5 && cursor>8 ) {
 			std::cerr << "  Stage 5 debug:\n";
-			std::cerr << "    inlined=" << inlined[0].item<float>()
-				<< " vec_size=" << vec_size[0].item<float>()
-				<< " n_vec=" << n_vec[0].item<float>()
-				<< " n_scal=" << n_scal[0].item<float>() << "\n";
-			std::cerr << "    compute_cost=" << compute_cost[0].item<float>() << "\n";
-			std::cerr << "    load_cost=" << load_cost[0].item<float>() << "\n";
-			std::cerr << "    store_cost=" << store_cost[0].item<float>() << "\n";
-			std::cerr << "    malloc_cost=" << malloc_cost[0].item<float>() << "\n";
-			std::cerr << "    parallelism_cost=" << parallelism_cost[0].item<float>() << "\n";
-			std::cerr << "    ws_cost=" << ws_cost[0].item<float>() << "\n";
-			std::cerr << "    stage_cost=" << stage_cost[0].item<float>() << "\n";                                                                                                                                                                                                 
+			std::cerr << "    inlined=" << inlined[8].item<float>()
+				<< " vec_size=" << vec_size[8].item<float>()
+				<< " n_vec=" << n_vec[8].item<float>()
+				<< " n_scal=" << n_scal[8].item<float>() << "\n";
+			std::cerr << "    compute_cost=" << compute_cost[8].item<float>() << "\n";
+			std::cerr << "    load_cost=" << load_cost[8].item<float>() << "\n";
+			std::cerr << "    store_cost=" << store_cost[8].item<float>() << "\n";
+			std::cerr << "    malloc_cost=" << malloc_cost[8].item<float>() << "\n";
+			std::cerr << "    parallelism_cost=" << parallelism_cost[8].item<float>() << "\n";
+			std::cerr << "    ws_cost=" << ws_cost[8].item<float>() << "\n";
+			std::cerr << "    stage_cost=" << stage_cost[8].item<float>() << "\n";                                                                                                                                                                                                 
 		}
 
-		std::cerr << "    stage " << s << ": cost=" << stage_cost[0].item<float>() << "\n";
+		if(cursor>8) {
+			std::cerr << "    stage " << s << ": cost=" << stage_cost[8].item<float>() << "\n";
+		}
     }
     
     // Stack and sum across stages, then convert to runtime
@@ -544,8 +546,11 @@ torch::Tensor LibTorchCostModel::compute_cost_from_coefficients(const torch::Ten
     total_cost = torch::sum(total_cost, 0); // (batch,)
     auto prediction = total_cost * 1e-9f;
 
-	std::cerr << "  total_cost=" << total_cost[0].item<float>()
-            << " prediction=" << prediction[0].item<float>() << "\n";
+	if(cursor>8)
+	{
+		std::cerr << "  total_cost=" << total_cost[8].item<float>()
+            << " prediction=" << prediction[8].item<float>() << "\n";
+	}
     
     return prediction;
 }
@@ -590,11 +595,17 @@ void LibTorchCostModel::evaluate_costs() {
 													   //
     auto coefficients = network->forward(pipeline_features, schedule_features_batch, num_stages, cursor);
 
-	if (num_stages == 19) {  // or use a pipeline_id check if available
-		std::cerr << "coefficients shape: " << coefficients.sizes() << "\n";
-		std::cerr << "coefficients[8,0,0:5]: ";
+	if (num_stages == 19 && cursor>8 ) {  // or use a pipeline_id check if available
+		std::cerr << "coefficients shape: \n" << coefficients.sizes() << "\n";
+		std::cerr << "coefficients[8,0,0:]: ";
 		for (int i = 0; i < 32; i++)
 			std::cerr << coefficients[8][0][i].item<float>() << " ";
+
+		std::cerr << "\n";
+
+		std::cerr << "coefficients[7,0,0:]: \n";
+		for (int i = 0; i < 32; i++)
+			std::cerr << coefficients[7][0][i].item<float>() << " ";
 		//std::cerr << "\ncoefficients[8,0,28:32]: ";
 		//for (int i = 28; i < 32; i++)
 			//std::cerr << coefficients[8][0][i].item<float>() << " ";
@@ -603,6 +614,10 @@ void LibTorchCostModel::evaluate_costs() {
     
     // Compute costs from coefficients
     auto predictions = compute_cost_from_coefficients(coefficients, schedule_features_batch, num_stages, cursor, num_cores);
+
+	//if (num_stages == 19) {
+		//std::cerr << "predicted cost for schedule 8: " << predictions[8].item<float>() << "\n";
+	//}
 
 	//BHsketch S ----
 	auto inferenceEndTime = std::chrono::high_resolution_clock::now();

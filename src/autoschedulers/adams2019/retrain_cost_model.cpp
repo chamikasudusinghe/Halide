@@ -648,7 +648,7 @@ int main(int argc, char **argv) {
 									// 3. Write data to the file
 									predictions_csv << p.second.pipeline_id 
 													<< ","<< sched.second.schedule_id 
-													<< ","<< sched.second.runtimes[0]
+													<< ","<< sched.second.prediction[0]
 													<< "\n";
 									// 4. Close the file
 								} else {
