@@ -186,8 +186,8 @@ LibTorchCostModel::LibTorchCostModel(const std::string &weights_in_path,
     // Set thread settings for performance
     // Use single thread to avoid contention with Halide's threading
     // Halide autoscheduler manages its own parallelism, so LibTorch should not compete
-    torch::set_num_threads(1);
-    torch::set_num_interop_threads(1);
+    //torch::set_num_threads(1);
+    //torch::set_num_interop_threads(1);
     
     // For better performance, this can be an option to consider
     // int num_threads = std::min(8, (int)std::thread::hardware_concurrency());
