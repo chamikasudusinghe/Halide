@@ -224,7 +224,7 @@ void LibTorchWeights::randomize(uint32_t seed) {
 
 void LibTorchWeights::randomize_generic(uint32_t seed) {
     std::mt19937 rng(seed);
-    std::normal_distribution<float> dist(0.0f, 0.1f);
+	std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
 
     for (auto &pair : model_weights_) {
         auto &tensor = pair.second;
