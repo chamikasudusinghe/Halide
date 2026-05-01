@@ -547,6 +547,47 @@ void generate_schedule(const std::vector<Function> &outputs,
         dag.dump(aslog(2).get_ostream());
     }
 
+    // If HL_PIPELINE_FEATURES_ONLY is set, dump per-stage PipelineFeatures
+    // to that path and exit. No beam search, no lowering, no codegen runs
+    // after this. The on-disk format matches the pipeline-feature portion of
+    // a regular .featurization file (see State::save_featurization): per
+    // non-input stage, num_pipeline_features floats; stages walked in reverse
+    // within each node; input nodes skipped. No header, no names.
+    {
+        string features_only_path = get_env_variable("HL_PIPELINE_FEATURES_ONLY");
+        if (!features_only_path.empty()) {
+            std::ofstream f(features_only_path, std::ios::binary);
+            if (!f.is_open()) {
+                std::cerr << "HL_PIPELINE_FEATURES_ONLY: failed to open '"
+                          << features_only_path << "' for writing\n";
+                std::exit(1);
+            }
+
+            const size_t num_pipeline_features = PipelineFeatures::num_features();
+            uint32_t num_stages = 0;
+            for (const auto &n : dag.nodes) {
+                if (n.is_input) {
+                    continue;
+                }
+                for (size_t stage_idx = n.stages.size(); stage_idx > 0; stage_idx--) {
+                    const auto &s = n.stages[stage_idx - 1];
+                    float buf[num_pipeline_features];
+                    for (size_t i = 0; i < num_pipeline_features; i++) {
+                        buf[i] = s.features[i];
+                    }
+                    f.write((const char *)buf, sizeof(buf));
+                    num_stages++;
+                }
+            }
+            f.close();
+
+            aslog(1) << "HL_PIPELINE_FEATURES_ONLY: wrote " << num_stages
+                     << " stages (" << num_pipeline_features
+                     << " floats each) to " << features_only_path << "\n";
+            std::exit(0);
+        }
+    }
+
     // Construct a cost model to use to evaluate states. Currently we
     // just have the one, but it's an abstract interface, so others
     // can be slotted in for experimentation.
