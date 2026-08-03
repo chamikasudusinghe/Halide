@@ -297,6 +297,7 @@ void CustomModelNetwork::initialize_weights(bool use_random_weights, std::string
 					if(!loaded) 
 					{
 						aslog(0) << "CustomModelNetwork::initialize_weights: could not load weights into generic format. Falling back to random weights\n";
+                        need_randomize = true;
 					} else if (loaded) {
 						aslog(1) << "CustomModelNetwork::initialize_weights: Loaded weights from LibTorch format (.pt)\n";
 					}
